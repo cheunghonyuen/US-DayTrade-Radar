@@ -1,0 +1,8 @@
+Upload these files to the repository root:
+- app.py
+- Procfile
+- requirements.txt (replace existing)
+- .gitignore
+
+Railway variable required:
+TIINGO_TOKEN = your Tiingo API token
