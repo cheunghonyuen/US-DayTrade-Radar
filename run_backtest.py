@@ -1,23 +1,49 @@
-
-import argparse, json
+import argparse
+import json
 from pathlib import Path
+
 import pandas as pd
-from src.engine import backtest
 
-p = argparse.ArgumentParser()
-p.add_argument("--data", required=True)
-p.add_argument("--config", default="config.json")
-p.add_argument("--outdir", default="outputs")
-args = p.parse_args()
+from engine import backtest
 
-cfg = json.loads(Path(args.config).read_text())
-df = pd.read_csv(args.data)
-trades, metrics = backtest(df, cfg)
 
-out = Path(args.outdir)
-out.mkdir(parents=True, exist_ok=True)
-trades.to_csv(out/"trades.csv", index=False)
-(out/"metrics.json").write_text(json.dumps(metrics, indent=2))
+def main():
+    parser = argparse.ArgumentParser(description="US DayTrade MVP v0.1 Backtest")
+    parser.add_argument("--data", required=True, help="Path to 1-minute OHLCV CSV")
+    parser.add_argument("--config", default="config.json", help="Path to config JSON")
+    parser.add_argument("--outdir", default="outputs", help="Directory for results")
+    args = parser.parse_args()
 
-print(json.dumps(metrics, indent=2))
-print(f"Saved: {out/'trades.csv'}")
+    config_path = Path(args.config)
+    data_path = Path(args.data)
+    outdir = Path(args.outdir)
+
+    if not config_path.exists():
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+    if not data_path.exists():
+        raise FileNotFoundError(f"Data file not found: {data_path}")
+
+    cfg = json.loads(config_path.read_text(encoding="utf-8"))
+    df = pd.read_csv(data_path)
+
+    required = {"timestamp", "symbol", "open", "high", "low", "close", "volume"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError("CSV is missing required columns: " + ", ".join(sorted(missing)))
+
+    trades, metrics = backtest(df, cfg)
+
+    outdir.mkdir(parents=True, exist_ok=True)
+    trades_path = outdir / "trades.csv"
+    metrics_path = outdir / "metrics.json"
+
+    trades.to_csv(trades_path, index=False)
+    metrics_path.write_text(json.dumps(metrics, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    print(json.dumps(metrics, indent=2, ensure_ascii=False))
+    print(f"Saved trades: {trades_path}")
+    print(f"Saved metrics: {metrics_path}")
+
+
+if __name__ == "__main__":
+    main()
