@@ -10,6 +10,7 @@ app = Flask(__name__)
 
 BASE = Path(__file__).resolve().parent
 DATA = BASE / "daytrade_data.csv"
+SIP_DATA = BASE / "sip_data.csv"
 OUT = BASE / "outputs"
 LOCK = threading.Lock()
 
@@ -65,10 +66,10 @@ th:first-child,td:first-child{text-align:left}
 </div>
 
 <div class="card">
-<h2>2. 下载 Tiingo 样本</h2>
+<h2>2. Stocks-in-Play 125</h2>
 <label>Start <input id="start" type="date" value="{{ start }}"></label>
 <label>End <input id="end" type="date" value="{{ end }}"></label><br>
-<button id="downloadBtn" type="button">Download 20 Stocks / 5min</button>
+<button id="downloadBtn" type="button">Download 125 Stocks-in-Play / 5min</button>
 <div class="row"><b>下载进度</b><span id="downloadPct">0%</span></div>
 <div class="track"><div id="downloadBar" class="bar"></div></div>
 <div id="downloadMsg" class="msg">尚未开始</div>
@@ -96,7 +97,7 @@ th:first-child,td:first-child{text-align:left}
 
 <div class="card">
 <h3>状态</h3>
-<p>Data: <span id="dataState">{{ "✅ Data ready" if data_exists else "❌ No data" }}</span></p>
+<p>Data: <span id="dataState">{{ "✅ SIP 125 Data ready" if sip_data_exists else ("✅ 20-stock Data ready" if data_exists else "❌ No data") }}</span></p>
 <p class="muted">Research / Paper only. No IBKR live orders.</p>
 </div>
 </div>
@@ -187,7 +188,7 @@ def set_job(kind, **kwargs):
 
 def render(**kwargs):
     start, end = default_dates()
-    base = dict(start=start, end=end, preflight=None, data_exists=DATA.exists())
+    base = dict(start=start, end=end, preflight=None, data_exists=DATA.exists(), sip_data_exists=SIP_DATA.exists())
     base.update(kwargs)
     return render_template_string(HTML, **base)
 
@@ -198,7 +199,7 @@ def index():
 @app.post("/preflight")
 def preflight():
     checks=[]; ok=True
-    for f in ["engine.py","run_backtest.py","prepare_tiingo_data.py","config.json"]:
+    for f in ["engine.py","run_backtest.py","prepare_tiingo_data.py","prepare_sip_data.py","config.json"]:
         exists=(BASE/f).exists()
         checks.append(f"{'OK' if exists else 'FAIL'} file {f}")
         ok = ok and exists
@@ -216,18 +217,18 @@ def preflight():
 def download_worker(start,end):
     import subprocess
     try:
-        set_job("download",running=True,progress=1,message="开始下载 20 只股票…",ok=None)
+        set_job("download",running=True,progress=1,message="开始下载 125 只 Stocks-in-Play…",ok=None)
         p=subprocess.Popen(
-            [sys.executable,"prepare_tiingo_data.py","--start",start,"--end",end,"--freq","5min","--out",str(DATA)],
+            [sys.executable,"prepare_sip_data.py","--start",start,"--end",end,"--freq","5min","--out",str(SIP_DATA)],
             cwd=BASE,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,env=os.environ.copy(),bufsize=1
         )
         lines=[]
         for line in p.stdout:
             line=line.rstrip(); lines.append(line)
-            if line.startswith("[") and "/20]" in line:
+            if line.startswith("[") and "/125]" in line:
                 try:
-                    n=int(line.split("/20]")[0][1:])
-                    set_job("download",progress=max(2,int(n/20*90)),message=f"正在下载 {n}/20")
+                    n=int(line.split("/125]")[0][1:])
+                    set_job("download",progress=max(2,int(n/125*90)),message=f"正在下载 {n}/20")
                 except Exception:
                     pass
             elif line.startswith("PREFLIGHT"):
@@ -241,12 +242,13 @@ def download_worker(start,end):
         set_job("download",running=False,progress=100,message=f"❌ {type(e).__name__}: {e}",ok=False)
 
 def backtest_worker():
-    if not DATA.exists():
+    data_path = SIP_DATA if SIP_DATA.exists() else DATA
+    if not data_path.exists():
         set_job("backtest",running=False,progress=100,message="❌ 先下载数据",ok=False)
         return
     try:
-        set_job("backtest",running=True,progress=12,message="读取数据…",ok=None)
-        df=pd.read_csv(DATA)
+        set_job("backtest",running=True,progress=12,message=f"读取数据：{data_path.name}…",ok=None)
+        df=pd.read_csv(data_path)
         cfg=json.loads((BASE/"config.json").read_text(encoding="utf-8"))
         set_job("backtest",progress=45,message="扫描 Gap + ORB + RVOL…")
         _,metrics=backtest(df,cfg)
@@ -257,12 +259,13 @@ def backtest_worker():
         set_job("backtest",running=False,progress=100,message=f"❌ {type(e).__name__}: {e}",ok=False)
 
 def matrix_worker():
-    if not DATA.exists():
+    data_path = SIP_DATA if SIP_DATA.exists() else DATA
+    if not data_path.exists():
         set_job("matrix",running=False,progress=100,message="❌ 先下载数据",ok=False)
         return
     try:
-        set_job("matrix",running=True,progress=1,message="载入数据，只读一次…",ok=None,results=[])
-        df=pd.read_csv(DATA)
+        set_job("matrix",running=True,progress=1,message=f"载入 {data_path.name}，只读一次…",ok=None,results=[])
+        df=pd.read_csv(data_path)
         cfg=json.loads((BASE/"config.json").read_text(encoding="utf-8"))
         combos=[(r,g,o) for r in [1.2,1.5,2.0,3.0] for g in [.03,.04,.06] for o in [5,15,20]]
         rows=[]
@@ -336,7 +339,7 @@ def job(kind):
         return jsonify({"error":"unknown job"}),404
     with LOCK:
         d=dict(JOBS[kind])
-    d["data_exists"]=DATA.exists()
+    d["data_exists"]=DATA.exists() or SIP_DATA.exists()
     return jsonify(d)
 
 @app.get("/health")
