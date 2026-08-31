@@ -57,7 +57,7 @@ HTML = """
 <html lang="zh">
 <head>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>US DayTrade Radar v0.8</title>
+<title>US DayTrade Radar v0.8.1</title>
 <style>
 body{font-family:-apple-system,BlinkMacSystemFont,Arial,sans-serif;background:#f4f6f8;margin:0;padding:16px;color:#111}
 .wrap{max-width:900px;margin:auto}
@@ -86,7 +86,7 @@ th:first-child,td:first-child{text-align:left}
 </head>
 <body>
 <div class="wrap">
-<h1>🇺🇸 US DayTrade Radar <small>v0.8</small></h1>
+<h1>🇺🇸 US DayTrade Radar <small>v0.8.1</small></h1>
 
 <div class="card">
 <h2>1. Preflight</h2>
@@ -214,15 +214,19 @@ th:first-child,td:first-child{text-align:left}
 const $ = (id)=>document.getElementById(id);
 
 function setProgress(kind, data){
-  const bar=$(kind+"Bar"), pct=$(kind+"Pct"), msg=$(kind+"Msg"), btn=$(kind+"Btn");
+  const bar=$(kind+"Bar"), pct=$(kind+"Pct"), msg=$(kind+"Msg");
+  // oosdl historically used oosDlBtn (capital D), so never assume kind+"Btn" exists.
+  const btn=$(kind+"Btn") || (kind==="oosdl" ? $("oosDlBtn") : null);
   const p=Math.max(0,Math.min(100,Number(data.progress||0)));
-  bar.style.width=p+"%";
-  pct.textContent=p+"%";
-  msg.textContent=data.message||"";
-  btn.disabled=!!data.running;
-  bar.classList.remove("done","fail");
-  if(!data.running && data.ok===true) bar.classList.add("done");
-  if(!data.running && data.ok===false) bar.classList.add("fail");
+  if(bar) bar.style.width=p+"%";
+  if(pct) pct.textContent=p+"%";
+  if(msg) msg.textContent=data.message||"";
+  if(btn) btn.disabled=!!data.running;
+  if(bar){
+    bar.classList.remove("done","fail");
+    if(!data.running && data.ok===true) bar.classList.add("done");
+    if(!data.running && data.ok===false) bar.classList.add("fail");
+  }
 }
 
 function renderMetrics(metrics){
@@ -475,6 +479,69 @@ def discover_persistent_data():
     return info
 
 
+
+def discover_oos_data(deep=False):
+    info = {
+        "exists": OOS_DATA.exists(),
+        "size_mb": 0.0,
+        "cache_files": 0,
+        "cache_size_mb": 0.0,
+        "symbols": None,
+        "rows": None,
+        "duplicates": None,
+        "bad_timestamp": None,
+        "start": None,
+        "end": None,
+        "schema_ok": None,
+        "ready": False,
+    }
+
+    if OOS_DATA.exists():
+        try:
+            info["size_mb"] = round(OOS_DATA.stat().st_size / (1024 * 1024), 1)
+        except Exception:
+            pass
+
+    try:
+        files = [p for p in OOS_CACHE.glob("*.csv") if p.is_file()]
+        info["cache_files"] = len(files)
+        info["cache_size_mb"] = round(sum(p.stat().st_size for p in files) / (1024 * 1024), 1)
+    except Exception:
+        pass
+
+    # Fast readiness requires both merged file and the expected 125 symbol cache files.
+    info["ready"] = bool(info["exists"] and info["size_mb"] > 1.0 and info["cache_files"] == 125)
+
+    if deep and info["exists"]:
+        try:
+            probe = pd.read_csv(OOS_DATA)
+            needed = {"symbol","timestamp","open","high","low","close","volume"}
+            info["schema_ok"] = needed.issubset(set(probe.columns))
+            info["rows"] = int(len(probe))
+            if "symbol" in probe.columns:
+                info["symbols"] = int(probe["symbol"].astype(str).nunique())
+            if "timestamp" in probe.columns:
+                ts = pd.to_datetime(probe["timestamp"], errors="coerce", utc=True)
+                info["bad_timestamp"] = int(ts.isna().sum())
+                if ts.notna().any():
+                    info["start"] = str(ts.min())
+                    info["end"] = str(ts.max())
+            if {"symbol","timestamp"}.issubset(probe.columns):
+                info["duplicates"] = int(probe.duplicated(["symbol","timestamp"]).sum())
+
+            info["ready"] = bool(
+                info["schema_ok"] and
+                (info["symbols"] == 125) and
+                (info["rows"] or 0) > 100000 and
+                (info["bad_timestamp"] == 0) and
+                (info["duplicates"] == 0)
+            )
+        except Exception:
+            info["ready"] = False
+
+    return info
+
+
 def persistent_preflight_lines():
     d = discover_persistent_data()
     lines = []
@@ -551,9 +618,28 @@ def preflight():
     checks.extend(storage_lines)
     ok = ok and storage_info["volume_ok"]
 
-    if OOS_DATA.exists():
-        checks.append(f"OK untouched OOS dataset: {OOS_DATA.name} ({round(OOS_DATA.stat().st_size/1024/1024,1)} MB)")
+    oos_info = discover_oos_data(deep=True)
+    if oos_info["ready"]:
+        checks.append(
+            f"OK untouched OOS dataset: {OOS_DATA.name} "
+            f"({oos_info['size_mb']} MB / {oos_info['rows']} rows / {oos_info['symbols']} symbols)"
+        )
+        checks.append(
+            f"OK untouched OOS schema/timestamps/duplicates: "
+            f"bad_timestamp={oos_info['bad_timestamp']} duplicates={oos_info['duplicates']}"
+        )
+        checks.append(
+            f"OK untouched OOS cache: {oos_info['cache_files']} files / {oos_info['cache_size_mb']} MB"
+        )
         checks.append("Reuse untouched OOS data: YES")
+    elif oos_info["exists"] or oos_info["cache_files"] > 0:
+        checks.append(
+            f"FAIL untouched OOS incomplete: merged={oos_info['exists']} "
+            f"size={oos_info['size_mb']}MB cache_files={oos_info['cache_files']} "
+            f"rows={oos_info['rows']} symbols={oos_info['symbols']}"
+        )
+        checks.append("Reuse untouched OOS data: NO")
+        ok = False
     else:
         checks.append("INFO untouched OOS dataset not downloaded yet")
         checks.append("Reuse untouched OOS data: NO")
@@ -853,10 +939,16 @@ def start_oos_download():
 
 
 def oos_worker():
-    if not OOS_DATA.exists():
+    oi = discover_oos_data(deep=True)
+    if not oi["ready"]:
         set_job(
             "oos", running=False, progress=100,
-            message="❌ 先下载 Untouched OOS 数据；不会覆盖当前 2025-2026 Replay。",
+            message=(
+                "❌ Untouched OOS 尚未通过完整 Preflight："
+                f"merged={oi['exists']} size={oi['size_mb']}MB "
+                f"cache={oi['cache_files']}/125 rows={oi['rows']} symbols={oi['symbols']}。"
+                "先 Run Preflight；不要重复下载，除非 Preflight 明确判定数据不完整。"
+            ),
             ok=False
         )
         return
@@ -929,6 +1021,30 @@ def job(kind):
         return jsonify({"error":"unknown job"}),404
     with LOCK:
         d=dict(JOBS[kind])
+
+    # Job state is in memory, but OOS data is persistent. Reconstruct a truthful
+    # completed state after page refresh or Railway process restart.
+    if kind == "oosdl" and not d.get("running"):
+        oi = discover_oos_data(deep=False)
+        if oi["ready"]:
+            d.update({
+                "progress": 100,
+                "ok": True,
+                "message": (
+                    f"✅ Untouched OOS ready：{oi['size_mb']} MB · "
+                    f"{oi['cache_files']}/125 cache files · Persistent Volume"
+                ),
+            })
+        elif oi["exists"] or oi["cache_files"] > 0:
+            d.update({
+                "progress": min(99, int(oi["cache_files"] / 125 * 95) if oi["cache_files"] else 1),
+                "ok": None,
+                "message": (
+                    f"发现 OOS 落盘数据：merged={oi['exists']} · "
+                    f"cache {oi['cache_files']}/125。请 Run Preflight 做完整 Schema Audit。"
+                ),
+            })
+
     d["data_exists"]=DATA.exists() or SIP_DATA.exists()
     return jsonify(d)
 
