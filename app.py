@@ -5,6 +5,7 @@ from datetime import date, timedelta
 import pandas as pd
 from flask import Flask, request, render_template_string, jsonify
 from engine import backtest
+from filter_ladder import run_filter_ladder
 
 app = Flask(__name__)
 
@@ -18,6 +19,7 @@ JOBS = {
     "download": {"running": False, "progress": 0, "message": "尚未开始", "ok": None},
     "backtest": {"running": False, "progress": 0, "message": "尚未开始", "ok": None},
     "matrix": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "results": []},
+    "ladder": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "results": []},
 }
 
 HTML = """
@@ -25,7 +27,7 @@ HTML = """
 <html lang="zh">
 <head>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>US DayTrade Radar v0.3</title>
+<title>US DayTrade Radar v0.4</title>
 <style>
 body{font-family:-apple-system,BlinkMacSystemFont,Arial,sans-serif;background:#f4f6f8;margin:0;padding:16px;color:#111}
 .wrap{max-width:900px;margin:auto}
@@ -54,7 +56,7 @@ th:first-child,td:first-child{text-align:left}
 </head>
 <body>
 <div class="wrap">
-<h1>🇺🇸 US DayTrade Radar <small>v0.3</small></h1>
+<h1>🇺🇸 US DayTrade Radar <small>v0.4</small></h1>
 
 <div class="card">
 <h2>1. Preflight</h2>
@@ -93,6 +95,17 @@ th:first-child,td:first-child{text-align:left}
 <div class="track"><div id="matrixBar" class="bar"></div></div>
 <div id="matrixMsg" class="msg">尚未开始</div>
 <div id="matrixResults" class="scroll"></div>
+</div>
+
+<div class="card">
+<h2>5. V0.4 Filter Ladder</h2>
+<p><b>冻结基准：</b> RVOL 3.0 / Gap ≥3% / OR 20min</p>
+<p class="muted">只做预先定义的累加过滤，不扫阈值：Baseline → +VWAP → +Breakout Volume → +Close Strength → +OR Quality。每层显示 Trades Retention / Win% / PF / Avg R / MaxDD，直接看哪一刀真正增加 edge。</p>
+<button id="ladderBtn" type="button">Run V0.4 Filter Ladder</button>
+<div class="row"><b>Filter Ladder 进度</b><span id="ladderPct">0%</span></div>
+<div class="track"><div id="ladderBar" class="bar"></div></div>
+<div id="ladderMsg" class="msg">尚未开始</div>
+<div id="ladderResults" class="scroll"></div>
 </div>
 
 <div class="card">
@@ -140,13 +153,26 @@ function renderMatrix(rows){
   $("matrixResults").innerHTML=h;
 }
 
+
+function renderLadder(rows){
+  if(!rows || !rows.length) return;
+  let h='<table><thead><tr><th>Step</th><th>Trades</th><th>Retain%</th><th>Win%</th><th>PF</th><th>Avg R</th><th>MaxDD%</th><th>Net PnL</th></tr></thead><tbody>';
+  rows.forEach((r)=>{
+    const pf=Number(r.profit_factor);
+    const cls=(pf>=1.2 && Number(r.trades)>=80 && Number(r.avg_r)>0) ? "pass" : "";
+    h+=`<tr class="${cls}"><td>${r.name}</td><td>${r.trades}</td><td>${r.retention_pct}</td><td>${(Number(r.win_rate)*100).toFixed(1)}</td><td>${r.profit_factor}</td><td>${r.avg_r}</td><td>${r.max_drawdown_pct}</td><td>${r.net_pnl}</td></tr>`;
+  });
+  h+="</tbody></table>";
+  $("ladderResults").innerHTML=h;
+}
+
 async function poll(kind){
   try{
     const r=await fetch("/job/"+kind,{cache:"no-store"});
     const d=await r.json();
     setProgress(kind,d);
     if(d.metrics) renderMetrics(d.metrics);
-    if(d.results) renderMatrix(d.results);
+    if(d.results){ if(kind==="ladder") renderLadder(d.results); else renderMatrix(d.results); }
     if(d.data_exists) $("dataState").textContent="✅ Data ready";
     if(d.running) setTimeout(()=>poll(kind),800);
   }catch(e){
@@ -171,7 +197,13 @@ $("matrixBtn").addEventListener("click", async ()=>{
   setProgress("matrix",d); poll("matrix");
 });
 
-poll("download"); poll("backtest"); poll("matrix");
+
+$("ladderBtn").addEventListener("click", async ()=>{
+  const d=await (await fetch("/start-ladder",{method:"POST"})).json();
+  setProgress("ladder",d); poll("ladder");
+});
+
+poll("download"); poll("backtest"); poll("matrix"); poll("ladder");
 </script>
 </body>
 </html>
@@ -199,7 +231,7 @@ def index():
 @app.post("/preflight")
 def preflight():
     checks=[]; ok=True
-    for f in ["engine.py","run_backtest.py","prepare_tiingo_data.py","prepare_sip_data.py","config.json"]:
+    for f in ["engine.py","run_backtest.py","prepare_tiingo_data.py","prepare_sip_data.py","filter_ladder.py","config.json"]:
         exists=(BASE/f).exists()
         checks.append(f"{'OK' if exists else 'FAIL'} file {f}")
         ok = ok and exists
@@ -300,6 +332,34 @@ def matrix_worker():
                 ok=True,results=rows)
     except Exception as e:
         set_job("matrix",running=False,progress=100,message=f"❌ {type(e).__name__}: {e}",ok=False)
+
+
+def ladder_worker():
+    data_path = SIP_DATA if SIP_DATA.exists() else DATA
+    if not data_path.exists():
+        set_job("ladder",running=False,progress=100,message="❌ 先下载数据",ok=False)
+        return
+    try:
+        set_job("ladder",running=True,progress=5,message="读取固定 Replay Dataset…",ok=None,results=[])
+        results = run_filter_ladder(str(data_path), str(BASE/"config.json"))
+        # Ladder is only 5 cumulative layers; report completion after deterministic run.
+        OUT.mkdir(exist_ok=True)
+        (OUT/"filter_ladder_v04.json").write_text(json.dumps(results,indent=2),encoding="utf-8")
+        set_job("ladder",running=False,progress=100,
+                message="✅ V0.4 Filter Ladder 完成。只看逐层增益，不做阈值拟合。",
+                ok=True,results=results)
+    except Exception as e:
+        set_job("ladder",running=False,progress=100,message=f"❌ {type(e).__name__}: {e}",ok=False)
+
+@app.post("/start-ladder")
+def start_ladder():
+    with LOCK:
+        if JOBS["ladder"]["running"]:
+            return jsonify(JOBS["ladder"])
+    threading.Thread(target=ladder_worker,daemon=True).start()
+    time.sleep(.05)
+    with LOCK:
+        return jsonify(JOBS["ladder"])
 
 @app.post("/start-download")
 def start_download():
