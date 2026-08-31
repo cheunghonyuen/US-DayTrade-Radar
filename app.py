@@ -6,6 +6,7 @@ import pandas as pd
 from flask import Flask, request, render_template_string, jsonify
 from engine import backtest
 from filter_ladder import run_filter_ladder
+from winner_loser_diag import run_winner_loser_diagnostic
 
 app = Flask(__name__)
 
@@ -20,6 +21,7 @@ JOBS = {
     "backtest": {"running": False, "progress": 0, "message": "尚未开始", "ok": None},
     "matrix": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "results": []},
     "ladder": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "results": []},
+    "dna": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
 }
 
 HTML = """
@@ -27,7 +29,7 @@ HTML = """
 <html lang="zh">
 <head>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>US DayTrade Radar v0.4</title>
+<title>US DayTrade Radar v0.5</title>
 <style>
 body{font-family:-apple-system,BlinkMacSystemFont,Arial,sans-serif;background:#f4f6f8;margin:0;padding:16px;color:#111}
 .wrap{max-width:900px;margin:auto}
@@ -56,7 +58,7 @@ th:first-child,td:first-child{text-align:left}
 </head>
 <body>
 <div class="wrap">
-<h1>🇺🇸 US DayTrade Radar <small>v0.4</small></h1>
+<h1>🇺🇸 US DayTrade Radar <small>v0.5</small></h1>
 
 <div class="card">
 <h2>1. Preflight</h2>
@@ -106,6 +108,17 @@ th:first-child,td:first-child{text-align:left}
 <div class="track"><div id="ladderBar" class="bar"></div></div>
 <div id="ladderMsg" class="msg">尚未开始</div>
 <div id="ladderResults" class="scroll"></div>
+</div>
+
+<div class="card">
+<h2>6. V0.5 Winner vs Loser DNA</h2>
+<p><b>冻结研究基准：</b> RVOL 3.0 / Gap ≥3% / OR20 / +VWAP</p>
+<p class="muted">不扫阈值。只比较 Winner vs Loser / Target vs Stop 的入场前特征，并把 MFE/MAE 只作为未来标签。输出 Gap、RVOL、VWAP距离、OR宽度、突破时间、突破幅度、前三根走势与量能差异。</p>
+<button id="dnaBtn" type="button">Run Winner vs Loser DNA</button>
+<div class="row"><b>DNA 进度</b><span id="dnaPct">0%</span></div>
+<div class="track"><div id="dnaBar" class="bar"></div></div>
+<div id="dnaMsg" class="msg">尚未开始</div>
+<div id="dnaResults" class="scroll"></div>
 </div>
 
 <div class="card">
@@ -166,6 +179,17 @@ function renderLadder(rows){
   $("ladderResults").innerHTML=h;
 }
 
+function renderDNA(r){
+  if(!r) return;
+  let h=`<p><b>${r.frozen_rule}</b></p><p>Trades ${r.trades} · Win ${(Number(r.win_rate)*100).toFixed(1)}% · PF ${r.profit_factor} · Avg R ${r.avg_r} · MaxDD ${r.max_drawdown_pct}%</p>`;
+  h+=`<p>Winner ${r.winner_count} / Loser ${r.loser_count} · Target ${r.target_count} / Stop ${r.stop_count}</p>`;
+  h+='<table><thead><tr><th>Feature</th><th>Winner Med</th><th>Loser Med</th><th>Delta</th><th>Effect</th></tr></thead><tbody>';
+  (r.features||[]).forEach(x=>{h+=`<tr><td>${x.feature}</td><td>${x.winner_median}</td><td>${x.loser_median}</td><td>${x.delta}</td><td>${x.robust_effect}</td></tr>`});
+  h+='</tbody></table>';
+  h+=`<p class="muted">MFE median: Winner ${r.winner_mfe_r_median}R / Loser ${r.loser_mfe_r_median}R. MAE median: Winner ${r.winner_mae_r_median}R / Loser ${r.loser_mae_r_median}R. MFE/MAE 只作标签，不可作为入场条件。</p>`;
+  $("dnaResults").innerHTML=h;
+}
+
 async function poll(kind){
   try{
     const r=await fetch("/job/"+kind,{cache:"no-store"});
@@ -173,6 +197,7 @@ async function poll(kind){
     setProgress(kind,d);
     if(d.metrics) renderMetrics(d.metrics);
     if(d.results){ if(kind==="ladder") renderLadder(d.results); else renderMatrix(d.results); }
+    if(d.result && kind==="dna") renderDNA(d.result);
     if(d.data_exists) $("dataState").textContent="✅ Data ready";
     if(d.running) setTimeout(()=>poll(kind),800);
   }catch(e){
@@ -203,7 +228,12 @@ $("ladderBtn").addEventListener("click", async ()=>{
   setProgress("ladder",d); poll("ladder");
 });
 
-poll("download"); poll("backtest"); poll("matrix"); poll("ladder");
+$("dnaBtn").addEventListener("click", async ()=>{
+  const d=await (await fetch("/start-dna",{method:"POST"})).json();
+  setProgress("dna",d); poll("dna");
+});
+
+poll("download"); poll("backtest"); poll("matrix"); poll("ladder"); poll("dna");
 </script>
 </body>
 </html>
@@ -231,7 +261,7 @@ def index():
 @app.post("/preflight")
 def preflight():
     checks=[]; ok=True
-    for f in ["engine.py","run_backtest.py","prepare_tiingo_data.py","prepare_sip_data.py","filter_ladder.py","config.json"]:
+    for f in ["engine.py","run_backtest.py","prepare_tiingo_data.py","prepare_sip_data.py","filter_ladder.py","winner_loser_diag.py","config.json"]:
         exists=(BASE/f).exists()
         checks.append(f"{'OK' if exists else 'FAIL'} file {f}")
         ok = ok and exists
@@ -360,6 +390,30 @@ def start_ladder():
     time.sleep(.05)
     with LOCK:
         return jsonify(JOBS["ladder"])
+
+def dna_worker():
+    data_path = SIP_DATA if SIP_DATA.exists() else DATA
+    if not data_path.exists():
+        set_job("dna",running=False,progress=100,message="❌ 先下载数据",ok=False)
+        return
+    try:
+        def cb(pct,msg):
+            set_job("dna",running=True,progress=int(pct),message=msg,ok=None)
+        set_job("dna",running=True,progress=1,message="启动 Winner vs Loser DNA…",ok=None,result=None)
+        result = run_winner_loser_diagnostic(str(data_path), str(BASE/"config.json"), progress_cb=cb)
+        set_job("dna",running=False,progress=100,message="✅ V0.5 DNA 完成。下一步只验证最有分离度的单一入场前特征。",ok=True,result=result)
+    except Exception as e:
+        set_job("dna",running=False,progress=100,message=f"❌ {type(e).__name__}: {e}",ok=False)
+
+@app.post("/start-dna")
+def start_dna():
+    with LOCK:
+        if JOBS["dna"]["running"]:
+            return jsonify(JOBS["dna"])
+    threading.Thread(target=dna_worker,daemon=True).start()
+    time.sleep(.05)
+    with LOCK:
+        return jsonify(JOBS["dna"])
 
 @app.post("/start-download")
 def start_download():
