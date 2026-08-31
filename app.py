@@ -10,6 +10,7 @@ from winner_loser_diag import run_winner_loser_diagnostic
 from entry_quality_v06 import run_entry_quality_validation
 from robustness_v07 import run_robustness_v07
 from true_oos_v08 import run_true_oos_v08
+from oos_failure_v09 import run_oos_failure_autopsy
 
 app = Flask(__name__)
 
@@ -50,6 +51,7 @@ JOBS = {
     "robust": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "oosdl": {"running": False, "progress": 0, "message": "尚未开始", "ok": None},
     "oos": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
+    "autopsy": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
 }
 
 HTML = """
@@ -57,7 +59,7 @@ HTML = """
 <html lang="zh">
 <head>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>US DayTrade Radar v0.8.1</title>
+<title>US DayTrade Radar v0.9</title>
 <style>
 body{font-family:-apple-system,BlinkMacSystemFont,Arial,sans-serif;background:#f4f6f8;margin:0;padding:16px;color:#111}
 .wrap{max-width:900px;margin:auto}
@@ -86,7 +88,7 @@ th:first-child,td:first-child{text-align:left}
 </head>
 <body>
 <div class="wrap">
-<h1>🇺🇸 US DayTrade Radar <small>v0.8.1</small></h1>
+<h1>🇺🇸 US DayTrade Radar <small>v0.9</small></h1>
 
 <div class="card">
 <h2>1. Preflight</h2>
@@ -185,6 +187,17 @@ th:first-child,td:first-child{text-align:left}
 <div class="track"><div id="oosBar" class="bar"></div></div>
 <div id="oosMsg" class="msg">尚未开始</div>
 <div id="oosResults" class="scroll"></div>
+</div>
+
+<div class="card">
+<h2>10. V0.9 OOS Failure Autopsy</h2>
+<p><b>研究对象：</b> V0.8 True OOS 已经失败的 Frozen Gate Trades</p>
+<p class="muted">不再调 0.75% / 3.50%，不重新下载，也不重跑一年 Replay。直接读取 /data/daytrade/oos_v08/outputs/v08_oos_gate_trades.csv，比较 OOS Winner vs Loser，并检查失败是否集中在某些股票或月份。结果只做诊断，不在这个 OOS 年上拟合新阈值。</p>
+<button id="autopsyBtn" type="button">Run V0.9 OOS Failure Autopsy</button>
+<div class="row"><b>Autopsy 进度</b><span id="autopsyPct">0%</span></div>
+<div class="track"><div id="autopsyBar" class="bar"></div></div>
+<div id="autopsyMsg" class="msg">尚未开始</div>
+<div id="autopsyResults" class="scroll"></div>
 </div>
 
 <div class="card">
@@ -348,6 +361,36 @@ function renderOOS(r){
   $("oosResults").innerHTML=h;
 }
 
+
+function renderAutopsy(r){
+  if(!r) return;
+  const s=r.gate_summary||{};
+  let h=`<p><b>${r.study}</b> · <b>${r.verdict}</b></p>`;
+  h+=`<p><b>Gate OOS:</b> ${s.trades||0} trades · Win ${(Number(s.win_rate||0)*100).toFixed(1)}% · PF ${s.profit_factor||0} · AvgR ${s.avg_r||0} · Stop ${(Number(s.stop_rate||0)*100).toFixed(1)}%</p>`;
+  h+=`<p>Winner ${r.winner_count} / Loser ${r.loser_count} · Target ${r.target_count} / Stop ${r.stop_count}</p>`;
+
+  h+='<h3>Winner vs Loser Pre-entry DNA</h3><table><thead><tr><th>Feature</th><th>Winner Med</th><th>Loser Med</th><th>Delta</th><th>Effect</th><th>Direction</th></tr></thead><tbody>';
+  (r.features||[]).forEach(x=>{
+    h+=`<tr><td>${x.feature}</td><td>${x.winner_median}</td><td>${x.loser_median}</td><td>${x.delta}</td><td>${x.robust_effect}</td><td>${x.direction}</td></tr>`;
+  });
+  h+='</tbody></table>';
+
+  h+='<h3>Worst Symbols</h3><table><thead><tr><th>Symbol</th><th>Trades</th><th>AvgR</th><th>Stop%</th></tr></thead><tbody>';
+  (r.worst_symbols||[]).forEach(x=>{
+    h+=`<tr><td>${x.symbol}</td><td>${x.trades}</td><td>${x.avg_r}</td><td>${(Number(x.stop_rate||0)*100).toFixed(1)}</td></tr>`;
+  });
+  h+='</tbody></table>';
+
+  h+='<h3>Monthly Failure Map</h3><table><thead><tr><th>Month</th><th>Trades</th><th>Win%</th><th>AvgR</th><th>Stop%</th></tr></thead><tbody>';
+  (r.monthly_failure_map||[]).forEach(x=>{
+    h+=`<tr><td>${x.month}</td><td>${x.trades}</td><td>${(Number(x.win_rate||0)*100).toFixed(1)}</td><td>${x.avg_r}</td><td>${(Number(x.stop_rate||0)*100).toFixed(1)}</td></tr>`;
+  });
+  h+='</tbody></table>';
+
+  h+=`<p><b>Next:</b> ${r.next_step}</p><p class="muted">${r.guardrail}</p>`;
+  $("autopsyResults").innerHTML=h;
+}
+
 async function poll(kind){
   try{
     const r=await fetch("/job/"+kind,{cache:"no-store"});
@@ -359,6 +402,7 @@ async function poll(kind){
     if(d.result && kind==="entryq") renderEntryQ(d.result);
     if(d.result && kind==="robust") renderRobust(d.result);
     if(d.result && kind==="oos") renderOOS(d.result);
+    if(d.result && kind==="autopsy") renderAutopsy(d.result);
     if(d.data_exists) $("dataState").textContent="✅ Data ready";
     if(d.running) setTimeout(()=>poll(kind),800);
   }catch(e){
@@ -417,6 +461,12 @@ $("oosBtn").addEventListener("click", async ()=>{
   setProgress("oos",d); poll("oos");
 });
 
+
+$("autopsyBtn").addEventListener("click", async ()=>{
+  const d=await (await fetch("/start-autopsy",{method:"POST"})).json();
+  setProgress("autopsy",d); poll("autopsy");
+});
+
 $("rescanBtn").addEventListener("click", async ()=>{
   try{
     const d=await (await fetch("/rescan-data",{method:"POST"})).json();
@@ -427,7 +477,7 @@ $("rescanBtn").addEventListener("click", async ()=>{
   }
 });
 
-poll("download"); poll("backtest"); poll("matrix"); poll("ladder"); poll("dna"); poll("entryq"); poll("robust"); poll("oosdl"); poll("oos");
+poll("download"); poll("backtest"); poll("matrix"); poll("ladder"); poll("dna"); poll("entryq"); poll("robust"); poll("oosdl"); poll("oos"); poll("autopsy");
 </script>
 </body>
 </html>
@@ -586,7 +636,7 @@ def index():
 @app.post("/preflight")
 def preflight():
     checks=[]; ok=True
-    for f in ["engine.py","run_backtest.py","prepare_tiingo_data.py","prepare_sip_data.py","filter_ladder.py","winner_loser_diag.py","entry_quality_v06.py","robustness_v07.py","true_oos_v08.py","config.json"]:
+    for f in ["engine.py","run_backtest.py","prepare_tiingo_data.py","prepare_sip_data.py","filter_ladder.py","winner_loser_diag.py","entry_quality_v06.py","robustness_v07.py","true_oos_v08.py","oos_failure_v09.py","config.json"]:
         exists=(BASE/f).exists()
         checks.append(f"{'OK' if exists else 'FAIL'} file {f}")
         ok = ok and exists
@@ -981,6 +1031,58 @@ def start_oos():
     time.sleep(.05)
     with LOCK:
         return jsonify(JOBS["oos"])
+
+
+
+def autopsy_worker():
+    gate_path = OOS_OUT / "v08_oos_gate_trades.csv"
+    base_path = OOS_OUT / "v08_oos_baseline_trades.csv"
+
+    if not gate_path.exists():
+        set_job(
+            "autopsy", running=False, progress=100,
+            message="❌ 找不到 V0.8 OOS Gate Trades。先跑一次 V0.8 True OOS；不要重新下载数据。",
+            ok=False
+        )
+        return
+
+    try:
+        def cb(pct, msg):
+            set_job("autopsy", running=True, progress=int(pct), message=msg, ok=None)
+
+        set_job(
+            "autopsy", running=True, progress=1,
+            message="读取 Persistent V0.8 OOS trade outputs…",
+            ok=None, result=None
+        )
+        result = run_oos_failure_autopsy(
+            str(gate_path),
+            str(base_path) if base_path.exists() else None,
+            outdir=str(OOS_OUT),
+            progress_cb=cb
+        )
+        set_job(
+            "autopsy", running=False, progress=100,
+            message=f"✅ V0.9 完成：{result['verdict']}",
+            ok=True, result=result
+        )
+    except Exception as e:
+        set_job(
+            "autopsy", running=False, progress=100,
+            message=f"❌ {type(e).__name__}: {e}",
+            ok=False
+        )
+
+
+@app.post("/start-autopsy")
+def start_autopsy():
+    with LOCK:
+        if JOBS["autopsy"]["running"]:
+            return jsonify(JOBS["autopsy"])
+    threading.Thread(target=autopsy_worker, daemon=True).start()
+    time.sleep(.05)
+    with LOCK:
+        return jsonify(JOBS["autopsy"])
 
 
 @app.post("/start-download")
