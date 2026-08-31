@@ -1,4 +1,4 @@
-import json, os, sys, threading, time
+import json, os, sys, threading, time, re
 from pathlib import Path
 from datetime import date, timedelta
 
@@ -9,6 +9,7 @@ from filter_ladder import run_filter_ladder
 from winner_loser_diag import run_winner_loser_diagnostic
 from entry_quality_v06 import run_entry_quality_validation
 from robustness_v07 import run_robustness_v07
+from true_oos_v08 import run_true_oos_v08
 
 app = Flask(__name__)
 
@@ -27,6 +28,13 @@ DATA = DATA_ROOT / "daytrade_data.csv"
 SIP_DATA = DATA_ROOT / "sip_data.csv"
 SIP_CACHE = DATA_ROOT / "sip_cache"
 OUT = DATA_ROOT / "outputs"
+OOS_DIR = DATA_ROOT / "oos_v08"
+OOS_DATA = OOS_DIR / "sip_oos_2024-08-30_2025-08-29.csv"
+OOS_CACHE = OOS_DIR / "sip_cache"
+OOS_OUT = OOS_DIR / "outputs"
+OOS_DIR.mkdir(parents=True, exist_ok=True)
+OOS_CACHE.mkdir(parents=True, exist_ok=True)
+OOS_OUT.mkdir(parents=True, exist_ok=True)
 SIP_CACHE.mkdir(parents=True, exist_ok=True)
 OUT.mkdir(parents=True, exist_ok=True)
 
@@ -40,6 +48,8 @@ JOBS = {
     "dna": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "entryq": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "robust": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
+    "oosdl": {"running": False, "progress": 0, "message": "尚未开始", "ok": None},
+    "oos": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
 }
 
 HTML = """
@@ -47,7 +57,7 @@ HTML = """
 <html lang="zh">
 <head>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>US DayTrade Radar v0.7</title>
+<title>US DayTrade Radar v0.8</title>
 <style>
 body{font-family:-apple-system,BlinkMacSystemFont,Arial,sans-serif;background:#f4f6f8;margin:0;padding:16px;color:#111}
 .wrap{max-width:900px;margin:auto}
@@ -76,7 +86,7 @@ th:first-child,td:first-child{text-align:left}
 </head>
 <body>
 <div class="wrap">
-<h1>🇺🇸 US DayTrade Radar <small>v0.7</small></h1>
+<h1>🇺🇸 US DayTrade Radar <small>v0.8</small></h1>
 
 <div class="card">
 <h2>1. Preflight</h2>
@@ -159,6 +169,22 @@ th:first-child,td:first-child{text-align:left}
 <div class="track"><div id="robustBar" class="bar"></div></div>
 <div id="robustMsg" class="msg">尚未开始</div>
 <div id="robustResults" class="scroll"></div>
+</div>
+
+<div class="card">
+<h2>9. V0.8 True OOS Validation</h2>
+<p><b>锁死规则：</b> Baseline = RVOL 3.0 / Gap ≥3% / OR20 / +VWAP；Gate = prior 3-bar return ≤0.75% AND OR range ≥3.50%</p>
+<p class="muted">Untouched OOS 固定为 2024-08-30 → 2025-08-29，与发现/robustness 年 2025-08-30 → 2026-08-30 完全分开。只下载这一次并写入 /data/daytrade/oos_v08，之后部署继续复用。看完 OOS 后禁止再调 0.75% / 3.50%。</p>
+<button id="oosDlBtn" type="button">Download Untouched OOS 125 / 5min</button>
+<div class="row"><b>OOS 下载进度</b><span id="oosdlPct">0%</span></div>
+<div class="track"><div id="oosdlBar" class="bar"></div></div>
+<div id="oosdlMsg" class="msg">尚未开始</div>
+
+<button id="oosBtn" type="button">Run V0.8 True OOS</button>
+<div class="row"><b>True OOS 进度</b><span id="oosPct">0%</span></div>
+<div class="track"><div id="oosBar" class="bar"></div></div>
+<div id="oosMsg" class="msg">尚未开始</div>
+<div id="oosResults" class="scroll"></div>
 </div>
 
 <div class="card">
@@ -298,6 +324,26 @@ function renderRobust(r){
   $("robustResults").innerHTML=h;
 }
 
+
+function renderOOS(r){
+  if(!r) return;
+  let h=`<p><b>${r.study}</b> · <b>${r.verdict}</b> · ${r.checks_passed}/${r.checks_total} checks</p>`;
+  h+=`<p><b>Frozen Baseline:</b> ${r.frozen_baseline}<br><b>Frozen Gate:</b> ${r.frozen_gate}</p>`;
+  h+='<table><thead><tr><th>Arm</th><th>Trades</th><th>Win%</th><th>PF</th><th>Avg R</th><th>Stop%</th><th>Target%</th><th>MaxDD%</th><th>Net PnL</th></tr></thead><tbody>';
+  const b=r.baseline||{}, g=r.gate||{};
+  h+=`<tr><td>Baseline</td><td>${b.trades}</td><td>${(Number(b.win_rate||0)*100).toFixed(1)}</td><td>${b.profit_factor}</td><td>${b.avg_r}</td><td>${(Number(b.stop_rate||0)*100).toFixed(1)}</td><td>${(Number(b.target_rate||0)*100).toFixed(1)}</td><td>${b.max_drawdown_pct}</td><td>${b.net_pnl}</td></tr>`;
+  h+=`<tr><td>Frozen Gate</td><td>${g.trades}</td><td>${(Number(g.win_rate||0)*100).toFixed(1)}</td><td>${g.profit_factor}</td><td>${g.avg_r}</td><td>${(Number(g.stop_rate||0)*100).toFixed(1)}</td><td>${(Number(g.target_rate||0)*100).toFixed(1)}</td><td>${g.max_drawdown_pct}</td><td>${g.net_pnl}</td></tr>`;
+  h+='</tbody></table>';
+  h+=`<p><b>Retention:</b> ${r.retention_pct}% · <b>ΔPF:</b> ${r.delta_pf} · <b>ΔAvgR:</b> ${r.delta_avg_r} · <b>ΔStop:</b> ${r.delta_stop_rate_pp}pp</p>`;
+  h+='<h3>Checks</h3><table><tbody>';
+  Object.entries(r.checks||{}).forEach(([k,v])=>{
+    h+=`<tr><td>${k}</td><td><b>${v ? "✅ PASS" : "❌ FAIL"}</b></td></tr>`;
+  });
+  h+='</tbody></table>';
+  h+=`<p class="muted">${r.note}</p>`;
+  $("oosResults").innerHTML=h;
+}
+
 async function poll(kind){
   try{
     const r=await fetch("/job/"+kind,{cache:"no-store"});
@@ -308,6 +354,7 @@ async function poll(kind){
     if(d.result && kind==="dna") renderDNA(d.result);
     if(d.result && kind==="entryq") renderEntryQ(d.result);
     if(d.result && kind==="robust") renderRobust(d.result);
+    if(d.result && kind==="oos") renderOOS(d.result);
     if(d.data_exists) $("dataState").textContent="✅ Data ready";
     if(d.running) setTimeout(()=>poll(kind),800);
   }catch(e){
@@ -355,6 +402,17 @@ $("robustBtn").addEventListener("click", async ()=>{
   setProgress("robust",d); poll("robust");
 });
 
+
+$("oosDlBtn").addEventListener("click", async ()=>{
+  const d=await (await fetch("/start-oos-download",{method:"POST"})).json();
+  setProgress("oosdl",d); poll("oosdl");
+});
+
+$("oosBtn").addEventListener("click", async ()=>{
+  const d=await (await fetch("/start-oos",{method:"POST"})).json();
+  setProgress("oos",d); poll("oos");
+});
+
 $("rescanBtn").addEventListener("click", async ()=>{
   try{
     const d=await (await fetch("/rescan-data",{method:"POST"})).json();
@@ -365,7 +423,7 @@ $("rescanBtn").addEventListener("click", async ()=>{
   }
 });
 
-poll("download"); poll("backtest"); poll("matrix"); poll("ladder"); poll("dna"); poll("entryq"); poll("robust");
+poll("download"); poll("backtest"); poll("matrix"); poll("ladder"); poll("dna"); poll("entryq"); poll("robust"); poll("oosdl"); poll("oos");
 </script>
 </body>
 </html>
@@ -461,7 +519,7 @@ def index():
 @app.post("/preflight")
 def preflight():
     checks=[]; ok=True
-    for f in ["engine.py","run_backtest.py","prepare_tiingo_data.py","prepare_sip_data.py","filter_ladder.py","winner_loser_diag.py","entry_quality_v06.py","robustness_v07.py","config.json"]:
+    for f in ["engine.py","run_backtest.py","prepare_tiingo_data.py","prepare_sip_data.py","filter_ladder.py","winner_loser_diag.py","entry_quality_v06.py","robustness_v07.py","true_oos_v08.py","config.json"]:
         exists=(BASE/f).exists()
         checks.append(f"{'OK' if exists else 'FAIL'} file {f}")
         ok = ok and exists
@@ -492,6 +550,13 @@ def preflight():
     storage_lines, storage_info = persistent_preflight_lines()
     checks.extend(storage_lines)
     ok = ok and storage_info["volume_ok"]
+
+    if OOS_DATA.exists():
+        checks.append(f"OK untouched OOS dataset: {OOS_DATA.name} ({round(OOS_DATA.stat().st_size/1024/1024,1)} MB)")
+        checks.append("Reuse untouched OOS data: YES")
+    else:
+        checks.append("INFO untouched OOS dataset not downloaded yet")
+        checks.append("Reuse untouched OOS data: NO")
 
     return render(preflight={"ok":ok,"text":"\n".join(checks)})
 
@@ -726,6 +791,104 @@ def start_robust():
     time.sleep(.05)
     with LOCK:
         return jsonify(JOBS["robust"])
+
+
+
+def oos_download_worker():
+    try:
+        OOS_DIR.mkdir(parents=True, exist_ok=True)
+        OOS_CACHE.mkdir(parents=True, exist_ok=True)
+
+        set_job("oosdl", running=True, progress=2, message="准备下载 untouched OOS 2024-08-30 → 2025-08-29", ok=None)
+
+        import subprocess
+        cmd = [
+            sys.executable, "prepare_sip_data.py",
+            "--start", "2024-08-30",
+            "--end", "2025-08-29",
+            "--freq", "5min",
+            "--out", str(OOS_DATA),
+            "--cache-dir", str(OOS_CACHE),
+        ]
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+
+        last = ""
+        done_count = 0
+        for line in p.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            last = line
+            m = re.search(r"\\[(\\d+)\\s*/\\s*125\\]", line)
+            if m:
+                done_count = max(done_count, int(m.group(1)))
+                pct = min(95, 5 + int(done_count / 125 * 90))
+                set_job("oosdl", running=True, progress=pct, message=line, ok=None)
+
+        rc = p.wait()
+        if rc != 0:
+            raise RuntimeError(last or f"prepare_sip_data.py exited {rc}")
+
+        if not OOS_DATA.exists() or OOS_DATA.stat().st_size == 0:
+            raise RuntimeError("OOS download finished but output file is missing/empty")
+
+        set_job(
+            "oosdl", running=False, progress=100,
+            message=f"✅ Untouched OOS 下载完成：{round(OOS_DATA.stat().st_size/1024/1024,1)} MB，已写入 Persistent Volume",
+            ok=True
+        )
+    except Exception as e:
+        set_job("oosdl", running=False, progress=100, message=f"❌ {type(e).__name__}: {e}", ok=False)
+
+
+@app.post("/start-oos-download")
+def start_oos_download():
+    with LOCK:
+        if JOBS["oosdl"]["running"]:
+            return jsonify(JOBS["oosdl"])
+    threading.Thread(target=oos_download_worker, daemon=True).start()
+    time.sleep(.05)
+    with LOCK:
+        return jsonify(JOBS["oosdl"])
+
+
+def oos_worker():
+    if not OOS_DATA.exists():
+        set_job(
+            "oos", running=False, progress=100,
+            message="❌ 先下载 Untouched OOS 数据；不会覆盖当前 2025-2026 Replay。",
+            ok=False
+        )
+        return
+    try:
+        def cb(pct, msg):
+            set_job("oos", running=True, progress=int(pct), message=msg, ok=None)
+
+        set_job("oos", running=True, progress=1, message="读取 Persistent Untouched OOS…", ok=None, result=None)
+        result = run_true_oos_v08(
+            str(OOS_DATA),
+            str(BASE / "config.json"),
+            outdir=str(OOS_OUT),
+            progress_cb=cb
+        )
+        set_job(
+            "oos", running=False, progress=100,
+            message=f"✅ V0.8 完成：{result['verdict']} · {result['checks_passed']}/{result['checks_total']} checks",
+            ok=True, result=result
+        )
+    except Exception as e:
+        set_job("oos", running=False, progress=100, message=f"❌ {type(e).__name__}: {e}", ok=False)
+
+
+@app.post("/start-oos")
+def start_oos():
+    with LOCK:
+        if JOBS["oos"]["running"]:
+            return jsonify(JOBS["oos"])
+    threading.Thread(target=oos_worker, daemon=True).start()
+    time.sleep(.05)
+    with LOCK:
+        return jsonify(JOBS["oos"])
 
 
 @app.post("/start-download")
