@@ -7,6 +7,7 @@ from flask import Flask, request, render_template_string, jsonify
 from engine import backtest
 from filter_ladder import run_filter_ladder
 from winner_loser_diag import run_winner_loser_diagnostic
+from entry_quality_v06 import run_entry_quality_validation
 
 app = Flask(__name__)
 
@@ -36,6 +37,7 @@ JOBS = {
     "matrix": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "results": []},
     "ladder": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "results": []},
     "dna": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
+    "entryq": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
 }
 
 HTML = """
@@ -43,7 +45,7 @@ HTML = """
 <html lang="zh">
 <head>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>US DayTrade Radar v0.5.2</title>
+<title>US DayTrade Radar v0.6</title>
 <style>
 body{font-family:-apple-system,BlinkMacSystemFont,Arial,sans-serif;background:#f4f6f8;margin:0;padding:16px;color:#111}
 .wrap{max-width:900px;margin:auto}
@@ -72,7 +74,7 @@ th:first-child,td:first-child{text-align:left}
 </head>
 <body>
 <div class="wrap">
-<h1>🇺🇸 US DayTrade Radar <small>v0.5.2</small></h1>
+<h1>🇺🇸 US DayTrade Radar <small>v0.6</small></h1>
 
 <div class="card">
 <h2>1. Preflight</h2>
@@ -133,6 +135,17 @@ th:first-child,td:first-child{text-align:left}
 <div class="track"><div id="dnaBar" class="bar"></div></div>
 <div id="dnaMsg" class="msg">尚未开始</div>
 <div id="dnaResults" class="scroll"></div>
+</div>
+
+<div class="card">
+<h2>7. V0.6 Entry Quality Validation</h2>
+<p><b>冻结基准：</b> RVOL 3.0 / Gap ≥3% / OR20 / +VWAP</p>
+<p class="muted">不重新下载、不重跑 36 Matrix。直接读取 V0.5 DNA Trade Cache，只验证 3 个预先定义的 Gate：Anti-Chase（前三根涨幅 ≤0.75%）、OR Quality（OR宽度 ≥3.5%）、两者组合。不是阈值扫描。</p>
+<button id="entryqBtn" type="button">Run V0.6 Entry Quality</button>
+<div class="row"><b>Entry Quality 进度</b><span id="entryqPct">0%</span></div>
+<div class="track"><div id="entryqBar" class="bar"></div></div>
+<div id="entryqMsg" class="msg">尚未开始</div>
+<div id="entryqResults" class="scroll"></div>
 </div>
 
 <div class="card">
@@ -220,6 +233,25 @@ function renderDNA(r){
   $("dnaResults").innerHTML=h;
 }
 
+
+function renderEntryQ(r){
+  if(!r) return;
+  let h=`<p><b>${r.study}</b></p><p>${r.frozen_baseline}</p>`;
+  h+='<table><thead><tr><th>Gate</th><th>Trades</th><th>Retain%</th><th>Win%</th><th>PF</th><th>ΔPF</th><th>Avg R</th><th>Stop%</th><th>MaxDD%</th><th>H1 PF</th><th>H2 PF</th><th>Verdict</th></tr></thead><tbody>';
+  (r.rows||[]).forEach(x=>{
+    const cls=(x.verdict==="PASS")?"pass":"";
+    h+=`<tr class="${cls}"><td>${x.name}<br><span class="muted">${x.rule}</span></td><td>${x.trades}</td><td>${x.retention_pct}</td><td>${(Number(x.win_rate)*100).toFixed(1)}</td><td>${x.profit_factor}</td><td>${x.delta_pf}</td><td>${x.avg_r}</td><td>${(Number(x.stop_rate)*100).toFixed(1)}</td><td>${x.max_drawdown_pct}</td><td>${x.h1_pf}</td><td>${x.h2_pf}</td><td><b>${x.verdict}</b></td></tr>`;
+  });
+  h+='</tbody></table>';
+  if(r.best_candidate){
+    h+=`<p><b>Best validated candidate:</b> ${r.best_candidate.name} · ${r.best_candidate.verdict}</p>`;
+  }else{
+    h+='<p><b>结论：</b>没有 Gate 达到 PASS/WATCH；保留 V0.5 Frozen Baseline，不强行优化。</p>';
+  }
+  h+=`<p class="muted">${r.decision_rule}</p>`;
+  $("entryqResults").innerHTML=h;
+}
+
 async function poll(kind){
   try{
     const r=await fetch("/job/"+kind,{cache:"no-store"});
@@ -228,6 +260,7 @@ async function poll(kind){
     if(d.metrics) renderMetrics(d.metrics);
     if(d.results){ if(kind==="ladder") renderLadder(d.results); else renderMatrix(d.results); }
     if(d.result && kind==="dna") renderDNA(d.result);
+    if(d.result && kind==="entryq") renderEntryQ(d.result);
     if(d.data_exists) $("dataState").textContent="✅ Data ready";
     if(d.running) setTimeout(()=>poll(kind),800);
   }catch(e){
@@ -263,6 +296,12 @@ $("dnaBtn").addEventListener("click", async ()=>{
   setProgress("dna",d); poll("dna");
 });
 
+
+$("entryqBtn").addEventListener("click", async ()=>{
+  const d=await (await fetch("/start-entryq",{method:"POST"})).json();
+  setProgress("entryq",d); poll("entryq");
+});
+
 $("rescanBtn").addEventListener("click", async ()=>{
   try{
     const d=await (await fetch("/rescan-data",{method:"POST"})).json();
@@ -273,7 +312,7 @@ $("rescanBtn").addEventListener("click", async ()=>{
   }
 });
 
-poll("download"); poll("backtest"); poll("matrix"); poll("ladder"); poll("dna");
+poll("download"); poll("backtest"); poll("matrix"); poll("ladder"); poll("dna"); poll("entryq");
 </script>
 </body>
 </html>
@@ -369,7 +408,7 @@ def index():
 @app.post("/preflight")
 def preflight():
     checks=[]; ok=True
-    for f in ["engine.py","run_backtest.py","prepare_tiingo_data.py","prepare_sip_data.py","filter_ladder.py","winner_loser_diag.py","config.json"]:
+    for f in ["engine.py","run_backtest.py","prepare_tiingo_data.py","prepare_sip_data.py","filter_ladder.py","winner_loser_diag.py","entry_quality_v06.py","config.json"]:
         exists=(BASE/f).exists()
         checks.append(f"{'OK' if exists else 'FAIL'} file {f}")
         ok = ok and exists
@@ -541,6 +580,52 @@ def start_dna():
     time.sleep(.05)
     with LOCK:
         return jsonify(JOBS["dna"])
+
+
+def entryq_worker():
+    trades_path = OUT / "winner_loser_trades_v05.csv"
+    if not trades_path.exists():
+        set_job(
+            "entryq", running=False, progress=100,
+            message="❌ 找不到 V0.5 DNA Trade Cache。先跑一次 Winner vs Loser DNA；无需重新下载数据。",
+            ok=False
+        )
+        return
+    try:
+        def cb(pct, msg):
+            set_job("entryq", running=True, progress=int(pct), message=msg, ok=None)
+
+        set_job(
+            "entryq", running=True, progress=1,
+            message="读取 /data/daytrade/outputs 的 V0.5 DNA Cache…",
+            ok=None, result=None
+        )
+        result = run_entry_quality_validation(
+            str(trades_path),
+            str(BASE / "config.json"),
+            outdir=str(OUT),
+            progress_cb=cb
+        )
+        best = result.get("best_candidate")
+        if best:
+            msg = f"✅ V0.6 完成：{best['name']} = {best['verdict']}。先看 Retention / PF / AvgR / Stop / MaxDD / H1-H2，再决定是否晋级。"
+        else:
+            msg = "✅ V0.6 完成：没有 Gate 达到 PASS/WATCH。保留 Frozen Baseline，不硬调参数。"
+        set_job("entryq", running=False, progress=100, message=msg, ok=True, result=result)
+    except Exception as e:
+        set_job("entryq", running=False, progress=100, message=f"❌ {type(e).__name__}: {e}", ok=False)
+
+
+@app.post("/start-entryq")
+def start_entryq():
+    with LOCK:
+        if JOBS["entryq"]["running"]:
+            return jsonify(JOBS["entryq"])
+    threading.Thread(target=entryq_worker, daemon=True).start()
+    time.sleep(.05)
+    with LOCK:
+        return jsonify(JOBS["entryq"])
+
 
 @app.post("/start-download")
 def start_download():
