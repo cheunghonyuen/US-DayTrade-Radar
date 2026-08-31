@@ -11,9 +11,23 @@ from winner_loser_diag import run_winner_loser_diagnostic
 app = Flask(__name__)
 
 BASE = Path(__file__).resolve().parent
-DATA = BASE / "daytrade_data.csv"
-SIP_DATA = BASE / "sip_data.csv"
-OUT = BASE / "outputs"
+
+# Persistent Railway volume.
+# Mount a Railway Volume at /data, then market data/cache/results survive deploys.
+DATA_ROOT = Path(os.getenv("DAYTRADE_DATA_DIR", "/data/daytrade"))
+try:
+    DATA_ROOT.mkdir(parents=True, exist_ok=True)
+except Exception:
+    DATA_ROOT = BASE / "runtime_data"
+    DATA_ROOT.mkdir(parents=True, exist_ok=True)
+
+DATA = DATA_ROOT / "daytrade_data.csv"
+SIP_DATA = DATA_ROOT / "sip_data.csv"
+SIP_CACHE = DATA_ROOT / "sip_cache"
+OUT = DATA_ROOT / "outputs"
+SIP_CACHE.mkdir(parents=True, exist_ok=True)
+OUT.mkdir(parents=True, exist_ok=True)
+
 LOCK = threading.Lock()
 
 JOBS = {
@@ -29,7 +43,7 @@ HTML = """
 <html lang="zh">
 <head>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>US DayTrade Radar v0.5</title>
+<title>US DayTrade Radar v0.5.2</title>
 <style>
 body{font-family:-apple-system,BlinkMacSystemFont,Arial,sans-serif;background:#f4f6f8;margin:0;padding:16px;color:#111}
 .wrap{max-width:900px;margin:auto}
@@ -58,7 +72,7 @@ th:first-child,td:first-child{text-align:left}
 </head>
 <body>
 <div class="wrap">
-<h1>🇺🇸 US DayTrade Radar <small>v0.5</small></h1>
+<h1>🇺🇸 US DayTrade Radar <small>v0.5.2</small></h1>
 
 <div class="card">
 <h2>1. Preflight</h2>
@@ -123,7 +137,23 @@ th:first-child,td:first-child{text-align:left}
 
 <div class="card">
 <h3>状态</h3>
-<p>Data: <span id="dataState">{{ "✅ SIP 125 Data ready" if sip_data_exists else ("✅ 20-stock Data ready" if data_exists else "❌ No data") }}</span></p>
+<p>Data:
+{% if persistent_data.replay_ready %}
+<span id="dataState">✅ Persistent Replay ready</span>
+{% elif sip_data_exists %}
+<span id="dataState">✅ SIP 125 Data ready</span>
+{% elif data_exists %}
+<span id="dataState">✅ 20-stock Data ready</span>
+{% else %}
+<span id="dataState">❌ No data</span>
+{% endif %}
+</p>
+<p>Storage: <b>{{ data_root }}</b></p>
+<p>Replay file: <b>{{ persistent_data.sip_size_mb }} MB</b></p>
+<p>Cache: <b>{{ persistent_data.cache_files }} files / {{ persistent_data.cache_size_mb }} MB</b></p>
+<p class="muted">Deploy 后会自动扫描 /data；已有 Replay/Cache 时直接复用，不再要求重新下载。</p>
+<button id="rescanBtn" type="button">Rescan Persistent Data</button>
+<div id="rescanMsg" class="msg"></div>
 <p class="muted">Research / Paper only. No IBKR live orders.</p>
 </div>
 </div>
@@ -233,6 +263,16 @@ $("dnaBtn").addEventListener("click", async ()=>{
   setProgress("dna",d); poll("dna");
 });
 
+$("rescanBtn").addEventListener("click", async ()=>{
+  try{
+    const d=await (await fetch("/rescan-data",{method:"POST"})).json();
+    $("rescanMsg").textContent = `Replay ready: ${d.replay_ready ? "YES" : "NO"} | sip_data: ${d.sip_size_mb} MB | cache: ${d.cache_files} files / ${d.cache_size_mb} MB`;
+    if(d.replay_ready) $("dataState").textContent="✅ Persistent Replay ready";
+  }catch(e){
+    $("rescanMsg").textContent="Rescan failed";
+  }
+});
+
 poll("download"); poll("backtest"); poll("matrix"); poll("ladder"); poll("dna");
 </script>
 </body>
@@ -248,9 +288,77 @@ def set_job(kind, **kwargs):
     with LOCK:
         JOBS[kind].update(kwargs)
 
+
+def discover_persistent_data():
+    info = {
+        "data_root": str(DATA_ROOT),
+        "volume_ok": False,
+        "sip_exists": SIP_DATA.exists(),
+        "sip_size_mb": 0.0,
+        "cache_files": 0,
+        "cache_size_mb": 0.0,
+        "replay_ready": False,
+    }
+
+    try:
+        probe = DATA_ROOT / ".volume_probe"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        info["volume_ok"] = True
+    except Exception:
+        info["volume_ok"] = False
+
+    if SIP_DATA.exists():
+        try:
+            info["sip_size_mb"] = round(SIP_DATA.stat().st_size / (1024 * 1024), 1)
+        except Exception:
+            pass
+
+    try:
+        files = [p for p in SIP_CACHE.glob("*.csv") if p.is_file()]
+        info["cache_files"] = len(files)
+        info["cache_size_mb"] = round(sum(p.stat().st_size for p in files) / (1024 * 1024), 1)
+    except Exception:
+        pass
+
+    info["replay_ready"] = bool(info["sip_exists"] or info["cache_files"] > 0)
+    return info
+
+
+def persistent_preflight_lines():
+    d = discover_persistent_data()
+    lines = []
+
+    if d["volume_ok"]:
+        lines.append(f"OK volume writable: {d['data_root']}")
+    else:
+        lines.append(f"FAIL volume not writable: {d['data_root']}")
+
+    if d["sip_exists"]:
+        lines.append(f"OK existing Replay Dataset: sip_data.csv ({d['sip_size_mb']} MB)")
+    else:
+        lines.append("INFO no merged sip_data.csv yet")
+
+    if d["cache_files"] > 0:
+        lines.append(f"OK existing SIP cache: {d['cache_files']} files / {d['cache_size_mb']} MB")
+    else:
+        lines.append("INFO no SIP cache files yet")
+
+    lines.append(f"Reuse existing data: {'YES' if d['replay_ready'] else 'NO'}")
+    return lines, d
+
 def render(**kwargs):
     start, end = default_dates()
-    base = dict(start=start, end=end, preflight=None, data_exists=DATA.exists(), sip_data_exists=SIP_DATA.exists())
+    pdata = discover_persistent_data()
+    base = dict(
+        start=start,
+        end=end,
+        preflight=None,
+        data_exists=DATA.exists(),
+        sip_data_exists=SIP_DATA.exists(),
+        data_root=str(DATA_ROOT),
+        persistent_data=pdata,
+    )
     base.update(kwargs)
     return render_template_string(HTML, **base)
 
@@ -268,12 +376,31 @@ def preflight():
     token=bool(os.getenv("TIINGO_TOKEN"))
     checks.append(f"{'OK' if token else 'FAIL'} TIINGO_TOKEN")
     ok = ok and token
+
+    try:
+        probe = DATA_ROOT / ".write_test"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        checks.append(f"OK storage writable: {DATA_ROOT}")
+    except Exception as e:
+        checks.append(f"FAIL storage not writable: {DATA_ROOT} ({e})")
+        ok = False
+
+    if str(DATA_ROOT).startswith("/app"):
+        checks.append("WARN storage is under /app and will be erased on deploy")
+    elif str(DATA_ROOT).startswith("/data"):
+        checks.append("OK storage path is /data (persistent if Railway Volume is mounted)")
     try:
         import numpy, requests
         checks.append("OK python dependencies")
     except Exception as e:
         checks.append(f"FAIL dependencies: {e}")
         ok=False
+
+    storage_lines, storage_info = persistent_preflight_lines()
+    checks.extend(storage_lines)
+    ok = ok and storage_info["volume_ok"]
+
     return render(preflight={"ok":ok,"text":"\n".join(checks)})
 
 def download_worker(start,end):
@@ -281,7 +408,7 @@ def download_worker(start,end):
     try:
         set_job("download",running=True,progress=1,message="开始下载 125 只 Stocks-in-Play…",ok=None)
         p=subprocess.Popen(
-            [sys.executable,"prepare_sip_data.py","--start",start,"--end",end,"--freq","5min","--out",str(SIP_DATA)],
+            [sys.executable,"prepare_sip_data.py","--start",start,"--end",end,"--freq","5min","--out",str(SIP_DATA),"--cache-dir",str(SIP_CACHE)],
             cwd=BASE,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,env=os.environ.copy(),bufsize=1
         )
         lines=[]
@@ -455,6 +582,20 @@ def job(kind):
         d=dict(JOBS[kind])
     d["data_exists"]=DATA.exists() or SIP_DATA.exists()
     return jsonify(d)
+
+
+@app.post("/rescan-data")
+def rescan_data():
+    info = discover_persistent_data()
+    return jsonify({
+        "ok": True,
+        "replay_ready": info["replay_ready"],
+        "sip_exists": info["sip_exists"],
+        "sip_size_mb": info["sip_size_mb"],
+        "cache_files": info["cache_files"],
+        "cache_size_mb": info["cache_size_mb"],
+        "data_root": info["data_root"],
+    })
 
 @app.get("/health")
 def health():
