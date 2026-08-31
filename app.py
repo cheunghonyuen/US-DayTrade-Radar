@@ -8,6 +8,7 @@ from engine import backtest
 from filter_ladder import run_filter_ladder
 from winner_loser_diag import run_winner_loser_diagnostic
 from entry_quality_v06 import run_entry_quality_validation
+from robustness_v07 import run_robustness_v07
 
 app = Flask(__name__)
 
@@ -38,6 +39,7 @@ JOBS = {
     "ladder": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "results": []},
     "dna": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "entryq": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
+    "robust": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
 }
 
 HTML = """
@@ -45,7 +47,7 @@ HTML = """
 <html lang="zh">
 <head>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>US DayTrade Radar v0.6</title>
+<title>US DayTrade Radar v0.7</title>
 <style>
 body{font-family:-apple-system,BlinkMacSystemFont,Arial,sans-serif;background:#f4f6f8;margin:0;padding:16px;color:#111}
 .wrap{max-width:900px;margin:auto}
@@ -74,7 +76,7 @@ th:first-child,td:first-child{text-align:left}
 </head>
 <body>
 <div class="wrap">
-<h1>🇺🇸 US DayTrade Radar <small>v0.6</small></h1>
+<h1>🇺🇸 US DayTrade Radar <small>v0.7</small></h1>
 
 <div class="card">
 <h2>1. Preflight</h2>
@@ -146,6 +148,17 @@ th:first-child,td:first-child{text-align:left}
 <div class="track"><div id="entryqBar" class="bar"></div></div>
 <div id="entryqMsg" class="msg">尚未开始</div>
 <div id="entryqResults" class="scroll"></div>
+</div>
+
+<div class="card">
+<h2>8. V0.7 Robustness Validation</h2>
+<p><b>冻结 Gate：</b> prior 3-bar return ≤ 0.75% AND OR range ≥ 3.50%</p>
+<p class="muted">不调阈值、不重新下载、不重跑 Matrix。直接用 V0.5 DNA Trade Cache 做 4 个时间块 + 4 个固定 Symbol Buckets + 3000 次 Bootstrap。此阶段只检查稳定性，不把同一年数据冒充真正 OOS。</p>
+<button id="robustBtn" type="button">Run V0.7 Robustness</button>
+<div class="row"><b>Robustness 进度</b><span id="robustPct">0%</span></div>
+<div class="track"><div id="robustBar" class="bar"></div></div>
+<div id="robustMsg" class="msg">尚未开始</div>
+<div id="robustResults" class="scroll"></div>
 </div>
 
 <div class="card">
@@ -252,6 +265,39 @@ function renderEntryQ(r){
   $("entryqResults").innerHTML=h;
 }
 
+
+function renderRobust(r){
+  if(!r) return;
+  let h=`<p><b>${r.study}</b> · <b>${r.verdict}</b> · ${r.checks_passed}/${r.checks_total} checks</p>`;
+  h+=`<p><b>Frozen Gate:</b> ${r.gate}</p>`;
+  const o=r.overall||{};
+  if(o.gate){
+    h+=`<p><b>Overall:</b> ${o.gate.trades} trades · PF ${o.gate.profit_factor} · AvgR ${o.gate.avg_r} · Win ${(Number(o.gate.win_rate)*100).toFixed(1)}% · Stop ${(Number(o.gate.stop_rate)*100).toFixed(1)}% · Retain ${o.retention_pct}%</p>`;
+  }
+  const b=r.bootstrap||{};
+  h+=`<p><b>Bootstrap:</b> AvgR 95% CI [${(b.avg_r_ci95||[]).join(", ")}] · PF 95% CI [${(b.pf_ci95||[]).join(", ")}] · P(AvgR>0) ${(Number(b.prob_avg_r_gt0||0)*100).toFixed(1)}% · P(PF>1) ${(Number(b.prob_pf_gt1||0)*100).toFixed(1)}%</p>`;
+
+  h+='<h3>Time Blocks</h3><table><thead><tr><th>Block</th><th>Gate Trades</th><th>Retain%</th><th>Win%</th><th>PF</th><th>AvgR</th><th>Stop%</th></tr></thead><tbody>';
+  (r.time_blocks||[]).forEach(x=>{
+    h+=`<tr><td>${x.block}<br><span class="muted">${x.start}..${x.end}</span></td><td>${x.gate.trades}</td><td>${x.retention_pct}</td><td>${(Number(x.gate.win_rate)*100).toFixed(1)}</td><td>${x.gate.profit_factor}</td><td>${x.gate.avg_r}</td><td>${(Number(x.gate.stop_rate)*100).toFixed(1)}</td></tr>`;
+  });
+  h+='</tbody></table>';
+
+  h+='<h3>Symbol Buckets</h3><table><thead><tr><th>Bucket</th><th>Symbols</th><th>Gate Trades</th><th>Retain%</th><th>Win%</th><th>PF</th><th>AvgR</th><th>Stop%</th></tr></thead><tbody>';
+  (r.symbol_buckets||[]).forEach(x=>{
+    h+=`<tr><td>${x.bucket}</td><td>${x.symbols}</td><td>${x.gate.trades}</td><td>${x.retention_pct}</td><td>${(Number(x.gate.win_rate)*100).toFixed(1)}</td><td>${x.gate.profit_factor}</td><td>${x.gate.avg_r}</td><td>${(Number(x.gate.stop_rate)*100).toFixed(1)}</td></tr>`;
+  });
+  h+='</tbody></table>';
+
+  h+='<h3>Checks</h3><table><tbody>';
+  Object.entries(r.checks||{}).forEach(([k,v])=>{
+    h+=`<tr><td>${k}</td><td><b>${v ? "✅ PASS" : "❌ FAIL"}</b></td></tr>`;
+  });
+  h+='</tbody></table>';
+  h+=`<p class="muted">${r.same_sample_warning}</p><p><b>Next:</b> ${r.next_step}</p>`;
+  $("robustResults").innerHTML=h;
+}
+
 async function poll(kind){
   try{
     const r=await fetch("/job/"+kind,{cache:"no-store"});
@@ -261,6 +307,7 @@ async function poll(kind){
     if(d.results){ if(kind==="ladder") renderLadder(d.results); else renderMatrix(d.results); }
     if(d.result && kind==="dna") renderDNA(d.result);
     if(d.result && kind==="entryq") renderEntryQ(d.result);
+    if(d.result && kind==="robust") renderRobust(d.result);
     if(d.data_exists) $("dataState").textContent="✅ Data ready";
     if(d.running) setTimeout(()=>poll(kind),800);
   }catch(e){
@@ -302,6 +349,12 @@ $("entryqBtn").addEventListener("click", async ()=>{
   setProgress("entryq",d); poll("entryq");
 });
 
+
+$("robustBtn").addEventListener("click", async ()=>{
+  const d=await (await fetch("/start-robust",{method:"POST"})).json();
+  setProgress("robust",d); poll("robust");
+});
+
 $("rescanBtn").addEventListener("click", async ()=>{
   try{
     const d=await (await fetch("/rescan-data",{method:"POST"})).json();
@@ -312,7 +365,7 @@ $("rescanBtn").addEventListener("click", async ()=>{
   }
 });
 
-poll("download"); poll("backtest"); poll("matrix"); poll("ladder"); poll("dna"); poll("entryq");
+poll("download"); poll("backtest"); poll("matrix"); poll("ladder"); poll("dna"); poll("entryq"); poll("robust");
 </script>
 </body>
 </html>
@@ -408,7 +461,7 @@ def index():
 @app.post("/preflight")
 def preflight():
     checks=[]; ok=True
-    for f in ["engine.py","run_backtest.py","prepare_tiingo_data.py","prepare_sip_data.py","filter_ladder.py","winner_loser_diag.py","entry_quality_v06.py","config.json"]:
+    for f in ["engine.py","run_backtest.py","prepare_tiingo_data.py","prepare_sip_data.py","filter_ladder.py","winner_loser_diag.py","entry_quality_v06.py","robustness_v07.py","config.json"]:
         exists=(BASE/f).exists()
         checks.append(f"{'OK' if exists else 'FAIL'} file {f}")
         ok = ok and exists
@@ -625,6 +678,54 @@ def start_entryq():
     time.sleep(.05)
     with LOCK:
         return jsonify(JOBS["entryq"])
+
+
+
+def robust_worker():
+    trades_path = OUT / "winner_loser_trades_v05.csv"
+    if not trades_path.exists():
+        set_job(
+            "robust", running=False, progress=100,
+            message="❌ 找不到 V0.5 DNA Trade Cache。只需先跑一次 Winner vs Loser DNA；不要重新下载数据。",
+            ok=False
+        )
+        return
+    try:
+        def cb(pct, msg):
+            set_job("robust", running=True, progress=int(pct), message=msg, ok=None)
+
+        set_job(
+            "robust", running=True, progress=1,
+            message="读取 /data/daytrade/outputs 的 Frozen Trade Cache…",
+            ok=None, result=None
+        )
+        result = run_robustness_v07(
+            str(trades_path),
+            outdir=str(OUT),
+            progress_cb=cb
+        )
+        set_job(
+            "robust", running=False, progress=100,
+            message=f"✅ V0.7 完成：{result['verdict']} · {result['checks_passed']}/{result['checks_total']} checks",
+            ok=True, result=result
+        )
+    except Exception as e:
+        set_job(
+            "robust", running=False, progress=100,
+            message=f"❌ {type(e).__name__}: {e}",
+            ok=False
+        )
+
+
+@app.post("/start-robust")
+def start_robust():
+    with LOCK:
+        if JOBS["robust"]["running"]:
+            return jsonify(JOBS["robust"])
+    threading.Thread(target=robust_worker, daemon=True).start()
+    time.sleep(.05)
+    with LOCK:
+        return jsonify(JOBS["robust"])
 
 
 @app.post("/start-download")
