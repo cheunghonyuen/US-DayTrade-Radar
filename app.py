@@ -30,6 +30,7 @@ from paper_forward_test_v1 import run_paper_forward_update
 from paper_command_center_v1 import load_command_center
 from external_challenger_sam_bateman_v1 import run_external_challenger
 from external_challenger_alpaca_momentum_v1 import run_alpaca_momentum_challenger
+from alpaca_filter_funnel_audit_v1 import run_alpaca_filter_funnel_audit
 
 app = Flask(__name__)
 
@@ -90,6 +91,7 @@ JOBS = {
     "command_center": {"running": False, "progress": 0, "message": "尚未刷新", "ok": None, "result": None},
     "ext_challenger": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "alpaca_mom": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
+    "alpaca_funnel": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
 }
 
 HTML = """
@@ -128,6 +130,17 @@ th:first-child,td:first-child{text-align:left}
 <div class="wrap">
 <h1>🇺🇸 US DayTrade Radar <small>Original Engine Parity Audit v1</small></h1>
 
+<div class="card">
+<h2>30. Alpaca Momentum · Filter Funnel Audit v1</h2>
+<p><b>只解释29为什么0 trades，不改任何参数。</b></p>
+<p class="muted">逐层统计：125股票 symbol-days → Price $2–$13 → Prev Dollar Volume &gt;$500k → Change ≥3.5% → Entry-window Change &gt;4% → First-15m breakout → CumVol &gt;30k → MACD(12,26) → MACD(40,60) → Final Eligible。</p>
+<p class="muted">如果 $2–$13 已经把股票池清空，就判定 INCOMPATIBLE_UNIVERSE，不把29当成策略失败；如果 Final Eligible&gt;0 但29仍0 trades，才修 implementation。绝不调阈值。</p>
+<button id="alpaca_funnelBtn" type="button">Run Filter Funnel Audit</button>
+<div class="row"><b>Funnel 进度</b><span id="alpaca_funnelPct">0%</span></div>
+<div class="track"><div id="alpaca_funnelBar" class="bar"></div></div>
+<div id="alpaca_funnelMsg" class="msg">尚未开始</div>
+<div id="alpaca_funnelResults" class="scroll"></div>
+</div>
 <div class="card">
 <h2>29. External Challenger #2 · Alpaca Momentum v1</h2>
 <p><b>这次换真正不同的 edge family：官方 Alpaca Intraday Momentum Example。</b> 26 Frozen Champion 完全不动。</p>
@@ -993,6 +1006,22 @@ function renderAlpacaMom(r){
  $("alpaca_momResults").innerHTML=h;
 }
 
+
+function renderAlpacaFunnel(r){
+ if(!r)return;
+ const tbl=(title,s)=>{
+   let h=`<h3>${title}</h3><p>Symbols ${s.symbols} · ever $2-$13: ${s.symbols_ever_price_2_13} · ever final eligible: ${s.symbols_ever_final_eligible}</p>`;
+   h+='<table><thead><tr><th>Stage</th><th>Count</th><th>From start</th><th>From prev</th></tr></thead><tbody>';
+   (s.funnel||[]).forEach(x=>h+=`<tr><td>${x.stage}</td><td>${x.count}</td><td>${(Number(x.retention_from_start||0)*100).toFixed(2)}%</td><td>${(Number(x.retention_from_prev||0)*100).toFixed(2)}%</td></tr>`);
+   return h+'</tbody></table>';
+ };
+ let h=`<p><b>${r.study}</b> · <b>${r.verdict}</b></p>`;
+ h+=tbl("Discovery",r.discovery||{});
+ h+=tbl("True OOS",r.true_oos||{});
+ h+=`<p><b>Interpretation:</b> ${r.interpretation||""}</p><p><b>Next:</b> ${r.next_step||""}</p>`;
+ $("alpaca_funnelResults").innerHTML=h;
+}
+
 async function poll(kind){
   try{
     const r=await fetch("/job/"+kind,{cache:"no-store"});
@@ -1024,6 +1053,7 @@ async function poll(kind){
     if(d.result && kind==="command_center") renderCommandCenter(d.result);
     if(d.result && kind==="ext_challenger") renderExtChallenger(d.result);
     if(d.result && kind==="alpaca_mom") renderAlpacaMom(d.result);
+    if(d.result && kind==="alpaca_funnel") renderAlpacaFunnel(d.result);
     if(d.data_exists) $("dataState").textContent="✅ Data ready";
     if(d.running) setTimeout(()=>poll(kind),800);
   }catch(e){
@@ -1091,7 +1121,7 @@ $("autopsyBtn").addEventListener("click", async ()=>{
 $("tournamentBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-tournament",{method:"POST"})).json(); setProgress("tournament",d); poll("tournament"); });
 
 $("od_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-audit",{method:"POST"})).json(); setProgress("od_audit",d); poll("od_audit"); });
-$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); poll("orig_v01"); poll("parity_audit"); poll("orig_tz"); poll("qc_bench"); poll("qc_1m"); poll("bt_parity"); poll("bt_parity_v2"); poll("trade_parity"); poll("entry_truth"); poll("paper_fwd"); poll("command_center"); poll("ext_challenger"); poll("alpaca_mom"); });
+$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); poll("orig_v01"); poll("parity_audit"); poll("orig_tz"); poll("qc_bench"); poll("qc_1m"); poll("bt_parity"); poll("bt_parity_v2"); poll("trade_parity"); poll("entry_truth"); poll("paper_fwd"); poll("command_center"); poll("ext_challenger"); poll("alpaca_mom"); poll("alpaca_funnel"); });
 $("orb_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-orb-audit",{method:"POST"})).json(); setProgress("orb_audit",d); poll("orb_audit"); });
 $("fp_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-fp-audit",{method:"POST"})).json(); setProgress("fp_audit",d); poll("fp_audit"); });
 $("mc_trialBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-mc-trial",{method:"POST"})).json(); setProgress("mc_trial",d); poll("mc_trial"); });
@@ -1108,6 +1138,7 @@ $("paper_fwdBtn").addEventListener("click", async ()=>{ const d=await (await fet
 $("command_centerBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-command-center",{method:"POST"})).json(); setProgress("command_center",d); poll("command_center"); });
 $("ext_challengerBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-ext-challenger",{method:"POST"})).json(); setProgress("ext_challenger",d); poll("ext_challenger"); });
 $("alpaca_momBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-alpaca-mom",{method:"POST"})).json(); setProgress("alpaca_mom",d); poll("alpaca_mom"); });
+$("alpaca_funnelBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-alpaca-funnel",{method:"POST"})).json(); setProgress("alpaca_funnel",d); poll("alpaca_funnel"); });
 
 $("rescanBtn").addEventListener("click", async ()=>{
   try{
@@ -2305,6 +2336,29 @@ def start_alpaca_mom():
     time.sleep(.05)
     with LOCK:
         return jsonify(JOBS["alpaca_mom"])
+
+
+
+def alpaca_funnel_worker():
+    try:
+        def cb(pct,msg): set_job("alpaca_funnel",running=True,progress=int(pct),message=msg,ok=None)
+        set_job("alpaca_funnel",running=True,progress=1,message="29零交易诊断：逐层Filter Funnel，不改参数…",ok=None,result=None)
+        result=run_alpaca_filter_funnel_audit(progress_cb=cb)
+        set_job("alpaca_funnel",running=False,progress=100,
+                message=f"✅ Funnel Audit · {result['verdict']}",
+                ok=True,result=result)
+    except Exception as e:
+        set_job("alpaca_funnel",running=False,progress=100,message=f"❌ {type(e).__name__}: {e}",ok=False)
+
+@app.post("/start-alpaca-funnel")
+def start_alpaca_funnel():
+    with LOCK:
+        if JOBS["alpaca_funnel"]["running"]:
+            return jsonify(JOBS["alpaca_funnel"])
+    threading.Thread(target=alpaca_funnel_worker,daemon=True).start()
+    time.sleep(.05)
+    with LOCK:
+        return jsonify(JOBS["alpaca_funnel"])
 
 
 @app.post("/start-download")
