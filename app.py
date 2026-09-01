@@ -36,6 +36,7 @@ from alpaca_momentum_source_locked_v2 import run_alpaca_momentum_source_locked_v
 from external_challenger3_vwap_mean_reversion_v1 import run_external_challenger3
 from historical_depth_preflight_v1 import run_historical_depth_preflight, run_historical_depth_build
 from pairs_walkforward_v1 import run_pairs_walkforward
+from pairs_walkforward_resumable_v2 import run_pairs_runtime_preflight, run_pairs_walkforward_resumable
 
 app = Flask(__name__)
 
@@ -103,6 +104,8 @@ JOBS = {
     "hist_pre": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "hist_build": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "pairs_wf": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
+    "pairs_pre_v2": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
+    "pairs_v2": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
 }
 
 HTML = """
@@ -141,6 +144,18 @@ th:first-child,td:first-child{text-align:left}
 <div class="wrap">
 <h1>🇺🇸 US DayTrade Radar <small>Original Engine Parity Audit v1</small></h1>
 
+<div class="card">
+<h2>36. Pairs Walk-Forward · Resumable Runtime v2</h2>
+<p><b>只修35的运行架构，不改任何交易/筛选参数。</b></p>
+<p class="muted">A先做 Runtime/Schema Preflight：确认34的125个daily文件、schema、statsmodels/coint依赖、当前RSS内存。PASS才允许B。</p>
+<p class="muted">B按fold checkpoint：每个fold单独写 /data/daytrade/pairs_walkforward_v2/folds；pair检验按小批次跑，完成一个fold立即落盘并释放DataFrame。Railway中断后重新按B会从未完成fold继续，不从头重跑。</p>
+<button id="pairs_pre_v2Btn">A. Run Pairs Runtime Preflight</button>
+<div class="row"><b>Preflight</b><span id="pairs_pre_v2Pct">0%</span></div><div class="track"><div id="pairs_pre_v2Bar" class="bar"></div></div>
+<div id="pairs_pre_v2Msg" class="msg">尚未开始</div><div id="pairs_pre_v2Results" class="scroll"></div><br>
+<button id="pairs_v2Btn">B. Run / Resume Pairs Walk-Forward</button>
+<div class="row"><b>Pairs v2</b><span id="pairs_v2Pct">0%</span></div><div class="track"><div id="pairs_v2Bar" class="bar"></div></div>
+<div id="pairs_v2Msg" class="msg">尚未开始</div><div id="pairs_v2Results" class="scroll"></div>
+</div>
 <div class="card">
 <h2>35. Walk-Forward Pairs / Statistical Arbitrage v1</h2>
 <p><b>用34建立的5+年daily formation cache做真正rolling walk-forward。</b> 26 Frozen Forward完全不动。</p>
@@ -1164,6 +1179,21 @@ function renderPairsWF(r){
  $("pairs_wfResults").innerHTML=h;
 }
 
+
+function renderPairsPreV2(r){
+ if(!r)return; let h=`<p><b>${r.study}</b> · <b>${r.verdict}</b></p>`;
+ h+=`<p>Files ${r.files??0}/${r.expected??0} · RSS ${r.rss_mb??"?"} MB · coint ${r.statsmodels_coint_available?"✅":"❌"} · issues ${(r.issues||[]).length}</p>`;
+ h+=`<p>${r.guardrail||""}</p>`; $("pairs_pre_v2Results").innerHTML=h;
+}
+function renderPairsV2(r){
+ if(!r)return; const o=r.overall||{}, b=r.bootstrap||{}; const pct=x=>(Number(x||0)*100).toFixed(1);
+ let h=`<p><b>${r.study}</b></p><p>Completed folds ${r.completed_folds??0}/${r.fold_count??0} · positive PF folds ${r.positive_pf_folds??0} · RSS ${r.runtime?.rss_mb??"?"} MB</p>`;
+ h+='<table><thead><tr><th>Trades</th><th>Win%</th><th>PF</th><th>AvgTrade%</th><th>Sharpe</th><th>MaxDD%</th><th>Net%</th></tr></thead><tbody>';
+ h+=`<tr><td>${o.trades??0}</td><td>${pct(o.win_rate)}</td><td>${o.profit_factor??0}</td><td>${o.avg_trade_pct??0}</td><td>${o.sharpe??0}</td><td>${o.max_dd_pct??0}</td><td>${o.net_return_pct??0}</td></tr></tbody></table>`;
+ h+=`<p>Bootstrap P(PF&gt;1) ${pct(b.prob_pf_gt1)} · PF95% [${(b.pf_ci95||[]).join(", ")}]</p>`;
+ h+=`<p><b>Decision:</b> ${r.decision_rule||""}</p>`; $("pairs_v2Results").innerHTML=h;
+}
+
 async function poll(kind){
   try{
     const r=await fetch("/job/"+kind,{cache:"no-store"});
@@ -1202,6 +1232,8 @@ async function poll(kind){
     if(d.result && kind==="hist_pre") renderHistPre(d.result);
     if(d.result && kind==="hist_build") renderHistBuild(d.result);
     if(d.result && kind==="pairs_wf") renderPairsWF(d.result);
+    if(d.result && kind==="pairs_pre_v2") renderPairsPreV2(d.result);
+    if(d.result && kind==="pairs_v2") renderPairsV2(d.result);
     if(d.data_exists) $("dataState").textContent="✅ Data ready";
     if(d.running) setTimeout(()=>poll(kind),800);
   }catch(e){
@@ -1269,7 +1301,7 @@ $("autopsyBtn").addEventListener("click", async ()=>{
 $("tournamentBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-tournament",{method:"POST"})).json(); setProgress("tournament",d); poll("tournament"); });
 
 $("od_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-audit",{method:"POST"})).json(); setProgress("od_audit",d); poll("od_audit"); });
-$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); poll("orig_v01"); poll("parity_audit"); poll("orig_tz"); poll("qc_bench"); poll("qc_1m"); poll("bt_parity"); poll("bt_parity_v2"); poll("trade_parity"); poll("entry_truth"); poll("paper_fwd"); poll("command_center"); poll("ext_challenger"); poll("alpaca_mom"); poll("alpaca_funnel"); poll("alpaca_macd_parity"); poll("alpaca_v2"); poll("challenger3"); poll("hist_pre"); poll("hist_build"); poll("pairs_wf"); });
+$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); poll("orig_v01"); poll("parity_audit"); poll("orig_tz"); poll("qc_bench"); poll("qc_1m"); poll("bt_parity"); poll("bt_parity_v2"); poll("trade_parity"); poll("entry_truth"); poll("paper_fwd"); poll("command_center"); poll("ext_challenger"); poll("alpaca_mom"); poll("alpaca_funnel"); poll("alpaca_macd_parity"); poll("alpaca_v2"); poll("challenger3"); poll("hist_pre"); poll("hist_build"); poll("pairs_wf"); poll("pairs_pre_v2"); poll("pairs_v2"); });
 $("orb_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-orb-audit",{method:"POST"})).json(); setProgress("orb_audit",d); poll("orb_audit"); });
 $("fp_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-fp-audit",{method:"POST"})).json(); setProgress("fp_audit",d); poll("fp_audit"); });
 $("mc_trialBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-mc-trial",{method:"POST"})).json(); setProgress("mc_trial",d); poll("mc_trial"); });
@@ -1293,6 +1325,8 @@ $("challenger3Btn").addEventListener("click", async ()=>{ const d=await (await f
 $("hist_preBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-hist-pre",{method:"POST"})).json(); setProgress("hist_pre",d); poll("hist_pre"); });
 $("hist_buildBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-hist-build",{method:"POST"})).json(); setProgress("hist_build",d); poll("hist_build"); });
 $("pairs_wfBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-pairs-wf",{method:"POST"})).json(); setProgress("pairs_wf",d); poll("pairs_wf"); });
+$("pairs_pre_v2Btn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-pairs-pre-v2",{method:"POST"})).json(); setProgress("pairs_pre_v2",d); poll("pairs_pre_v2"); });
+$("pairs_v2Btn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-pairs-v2",{method:"POST"})).json(); setProgress("pairs_v2",d); poll("pairs_v2"); });
 
 $("rescanBtn").addEventListener("click", async ()=>{
   try{
@@ -2638,6 +2672,40 @@ def start_pairs_wf():
         if JOBS["pairs_wf"]["running"]: return jsonify(JOBS["pairs_wf"])
     threading.Thread(target=pairs_wf_worker,daemon=True).start(); time.sleep(.05)
     with LOCK:return jsonify(JOBS["pairs_wf"])
+
+
+
+def pairs_pre_v2_worker():
+    try:
+        def cb(p,m): set_job("pairs_pre_v2",running=True,progress=int(p),message=m,ok=None)
+        set_job("pairs_pre_v2",running=True,progress=1,message="Pairs Runtime/Schema Preflight…",ok=None,result=None)
+        r=run_pairs_runtime_preflight(progress_cb=cb)
+        set_job("pairs_pre_v2",running=False,progress=100,message=f"✅ Pairs Preflight {r['verdict']} · {r.get('files',0)} files · RSS {r.get('rss_mb')} MB",ok=(r["verdict"]=="PASS"),result=r)
+    except Exception as e:set_job("pairs_pre_v2",running=False,progress=100,message=f"❌ {type(e).__name__}: {e}",ok=False)
+
+@app.post("/start-pairs-pre-v2")
+def start_pairs_pre_v2():
+    with LOCK:
+        if JOBS["pairs_pre_v2"]["running"]: return jsonify(JOBS["pairs_pre_v2"])
+    threading.Thread(target=pairs_pre_v2_worker,daemon=True).start(); time.sleep(.05)
+    with LOCK:return jsonify(JOBS["pairs_pre_v2"])
+
+def pairs_v2_worker():
+    try:
+        def cb(p,m): set_job("pairs_v2",running=True,progress=int(p if p is not None else JOBS["pairs_v2"]["progress"]),message=m,ok=None)
+        set_job("pairs_v2",running=True,progress=1,message="Resumable pairs walk-forward：checkpoint/reuse enabled…",ok=None,result=None)
+        r=run_pairs_walkforward_resumable(progress_cb=cb)
+        o=r["overall"]; b=r["bootstrap"]
+        passed=(o["profit_factor"]>1 and o["avg_trade_pct"]>0 and o["sharpe"]>0 and b.get("prob_pf_gt1",0)>=0.8 and r["positive_pf_folds"]>=math.ceil(0.6*r["fold_count"]))
+        set_job("pairs_v2",running=False,progress=100,message=f"✅ Pairs v2 · {o['trades']} trades · PF {o['profit_factor']} · Sharpe {o['sharpe']} · {'PROMOTE' if passed else 'DROP/RESEARCH'}",ok=True,result=r)
+    except Exception as e:set_job("pairs_v2",running=False,progress=100,message=f"❌ {type(e).__name__}: {e}",ok=False)
+
+@app.post("/start-pairs-v2")
+def start_pairs_v2():
+    with LOCK:
+        if JOBS["pairs_v2"]["running"]: return jsonify(JOBS["pairs_v2"])
+    threading.Thread(target=pairs_v2_worker,daemon=True).start(); time.sleep(.05)
+    with LOCK:return jsonify(JOBS["pairs_v2"])
 
 
 @app.post("/start-download")
