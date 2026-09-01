@@ -35,7 +35,13 @@ from alpaca_macd_source_parity_audit_v1 import run_alpaca_macd_source_parity
 from alpaca_momentum_source_locked_v2 import run_alpaca_momentum_source_locked_v2
 from external_challenger3_vwap_mean_reversion_v1 import run_external_challenger3
 from historical_depth_preflight_v1 import run_historical_depth_preflight, run_historical_depth_build
-from pairs_walkforward_v1 import run_pairs_walkforward
+try:
+    from pairs_walkforward_v1 import run_pairs_walkforward
+    PAIRS_V1_IMPORT_ERROR = None
+except Exception as _pairs_v1_import_exc:
+    run_pairs_walkforward = None
+    PAIRS_V1_IMPORT_ERROR = f"{type(_pairs_v1_import_exc).__name__}: {_pairs_v1_import_exc}"
+
 try:
     from pairs_walkforward_resumable_v2 import run_pairs_runtime_preflight, run_pairs_walkforward_resumable
     PAIRS_V2_IMPORT_ERROR = None
@@ -154,6 +160,7 @@ th:first-child,td:first-child{text-align:left}
 <div class="card">
 <h2>36. Pairs Walk-Forward · Resumable Runtime v2</h2>
 <p><b>只修35的运行架构，不改任何交易/筛选参数。</b></p>
+<p class="muted"><b>Startup Fix:</b> Railway日志已确认旧35在app启动时直接import statsmodels而崩溃。本版把35/36全部改为guarded import；即使statsmodels未安装，网站仍可启动并在Preflight显示依赖缺失。</p>
 <p class="muted"><b>Deploy Guard:</b> 本版即使 pairs module 缺失也不会把整站打崩；A/B 会直接显示缺失模块或 import 错误。请确保 app.py 与 pairs_walkforward_resumable_v2.py 同时上传。</p>
 <p class="muted">A先做 Runtime/Schema Preflight：确认34的125个daily文件、schema、statsmodels/coint依赖、当前RSS内存。PASS才允许B。</p>
 <p class="muted">B按fold checkpoint：每个fold单独写 /data/daytrade/pairs_walkforward_v2/folds；pair检验按小批次跑，完成一个fold立即落盘并释放DataFrame。Railway中断后重新按B会从未完成fold继续，不从头重跑。</p>
@@ -2665,6 +2672,11 @@ def start_hist_build():
 
 def pairs_wf_worker():
     try:
+        if PAIRS_V1_IMPORT_ERROR:
+            raise RuntimeError(
+                "Legacy pairs_walkforward_v1 unavailable: " + PAIRS_V1_IMPORT_ERROR +
+                " | Use 36 v2 after installing statsmodels."
+            )
         def cb(p,m): set_job("pairs_wf",running=True,progress=int(p),message=m,ok=None)
         set_job("pairs_wf",running=True,progress=1,message="Pairs walk-forward：252d formation / 63d test；no rescue tuning…",ok=None,result=None)
         r=run_pairs_walkforward(progress_cb=cb)
