@@ -13,6 +13,7 @@ from true_oos_v08 import run_true_oos_v08
 from oos_failure_v09 import run_oos_failure_autopsy
 from setup_tournament_v1 import run_setup_tournament
 from opening_drive_audit_v1 import run_opening_drive_audit
+from opening_drive_decision_v1 import run_opening_drive_decision
 
 app = Flask(__name__)
 
@@ -56,6 +57,7 @@ JOBS = {
     "autopsy": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "tournament": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "od_audit": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
+    "od_decision": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
 }
 
 HTML = """
@@ -63,7 +65,7 @@ HTML = """
 <html lang="zh">
 <head>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>US DayTrade Radar · Opening Drive Audit</title>
+<title>US DayTrade Radar · Opening Drive Decision</title>
 <style>
 body{font-family:-apple-system,BlinkMacSystemFont,Arial,sans-serif;background:#f4f6f8;margin:0;padding:16px;color:#111}
 .wrap{max-width:900px;margin:auto}
@@ -92,7 +94,7 @@ th:first-child,td:first-child{text-align:left}
 </head>
 <body>
 <div class="wrap">
-<h1>🇺🇸 US DayTrade Radar <small>Opening Drive Audit v1</small></h1>
+<h1>🇺🇸 US DayTrade Radar <small>Opening Drive Decision v1</small></h1>
 
 <div class="card">
 <h2>1. Preflight</h2>
@@ -224,6 +226,18 @@ th:first-child,td:first-child{text-align:left}
 <div class="track"><div id="od_auditBar" class="bar"></div></div>
 <div id="od_auditMsg" class="msg">尚未开始</div>
 <div id="od_auditResults" class="scroll"></div>
+</div>
+
+
+<div class="card">
+<h2>13. Opening Drive Decision v1</h2>
+<p><b>去留裁决：</b> 不再救同一批样本上的 Opening Drive。</p>
+<p class="muted">只读取已经完成的 Setup Tournament + Opening Drive Audit。AUDIT_PASS 才保留；否则从主线 DROP，并自动提升 Tournament 下一名。不会重新下载、不会重跑 Replay、不会调阈值。</p>
+<button id="od_decisionBtn" type="button">Run Opening Drive Decision</button>
+<div class="row"><b>Decision 进度</b><span id="od_decisionPct">0%</span></div>
+<div class="track"><div id="od_decisionBar" class="bar"></div></div>
+<div id="od_decisionMsg" class="msg">尚未开始</div>
+<div id="od_decisionResults" class="scroll"></div>
 </div>
 
 <div class="card">
@@ -442,6 +456,22 @@ function renderODAudit(r){
  h+='</tbody></table>';
  $("od_auditResults").innerHTML=h;
 }
+
+function renderODDecision(r){
+  if(!r)return;
+  let h=`<p><b>${r.study}</b></p>`;
+  h+=`<p><b>Decision:</b> ${r.decision}</p>`;
+  h+=`<p><b>Audit:</b> ${r.audit_verdict} · ${r.audit_checks}</p>`;
+  h+=`<p><b>Failed checks:</b> ${(r.failed_checks||[]).join(", ") || "None"}</p>`;
+  h+=`<p><b>Next Mainline:</b> ${r.next_mainline || "NONE"}</p>`;
+  if(r.next_candidate){
+    const d=r.next_candidate.discovery||{}, o=r.next_candidate.oos||{};
+    h+=`<p><b>Promoted candidate:</b> ${r.next_candidate.setup} · ${r.next_candidate.verdict} · D PF ${d.profit_factor} / OOS PF ${o.profit_factor}</p>`;
+  }
+  h+=`<p>${r.reason}</p><p class="muted">${r.rule}</p>`;
+  $("od_decisionResults").innerHTML=h;
+}
+
 async function poll(kind){
   try{
     const r=await fetch("/job/"+kind,{cache:"no-store"});
@@ -456,6 +486,7 @@ async function poll(kind){
     if(d.result && kind==="autopsy") renderAutopsy(d.result);
     if(d.result && kind==="tournament") renderTournament(d.result);
     if(d.result && kind==="od_audit") renderODAudit(d.result);
+    if(d.result && kind==="od_decision") renderODDecision(d.result);
     if(d.data_exists) $("dataState").textContent="✅ Data ready";
     if(d.running) setTimeout(()=>poll(kind),800);
   }catch(e){
@@ -523,6 +554,7 @@ $("autopsyBtn").addEventListener("click", async ()=>{
 $("tournamentBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-tournament",{method:"POST"})).json(); setProgress("tournament",d); poll("tournament"); });
 
 $("od_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-audit",{method:"POST"})).json(); setProgress("od_audit",d); poll("od_audit"); });
+$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); });
 
 $("rescanBtn").addEventListener("click", async ()=>{
   try{
@@ -534,7 +566,12 @@ $("rescanBtn").addEventListener("click", async ()=>{
   }
 });
 
-poll("download"); poll("backtest"); poll("matrix"); poll("ladder"); poll("dna"); poll("entryq"); poll("robust"); poll("oosdl"); poll("oos"); poll("autopsy"); poll("tournament"); poll("od_audit");
+poll("download"); poll("backtest"); poll("matrix"); poll("ladder"); poll("dna"); poll("entryq"); poll("robust"); poll("oosdl"); poll("oos"); poll("autopsy"); poll("tournament"); poll("od_audit"); poll("od_decision");
+// Mobile dashboard: numbered research cards are always newest-first.
+(()=>{const wrap=document.querySelector(".wrap"); if(!wrap)return; const cards=[...wrap.querySelectorAll(":scope > .card")];
+const numbered=cards.map(c=>{const h=c.querySelector("h2");const m=h&&h.textContent.match(/^\s*(\d+)\./);return {c,n:m?Number(m[1]):-1};});
+numbered.filter(x=>x.n>=0).sort((a,b)=>b.n-a.n).forEach(x=>wrap.appendChild(x.c));
+numbered.filter(x=>x.n<0).forEach(x=>wrap.appendChild(x.c));})();
 </script>
 </body>
 </html>
@@ -1185,6 +1222,35 @@ def start_od_audit():
         if JOBS["od_audit"]["running"]: return jsonify(JOBS["od_audit"])
     threading.Thread(target=od_audit_worker,daemon=True).start(); time.sleep(.05)
     with LOCK:return jsonify(JOBS["od_audit"])
+
+
+def od_decision_worker():
+    tdir = OUT / "setup_tournament_v1"
+    tournament_json = tdir / "setup_tournament_v1.json"
+    audit_json = tdir / "opening_drive_audit_v1" / "opening_drive_audit_v1.json"
+    try:
+        set_job("od_decision", running=True, progress=20,
+                message="读取已保存 Tournament + Opening Drive Audit…", ok=None, result=None)
+        result = run_opening_drive_decision(
+            str(tournament_json), str(audit_json), str(tdir / "opening_drive_decision_v1")
+        )
+        set_job("od_decision", running=False, progress=100,
+                message=f"✅ Decision 完成：{result['decision']} → {result.get('next_mainline')}",
+                ok=True, result=result)
+    except Exception as e:
+        set_job("od_decision", running=False, progress=100,
+                message=f"❌ {type(e).__name__}: {e}", ok=False)
+
+@app.post("/start-od-decision")
+def start_od_decision():
+    with LOCK:
+        if JOBS["od_decision"]["running"]:
+            return jsonify(JOBS["od_decision"])
+    threading.Thread(target=od_decision_worker, daemon=True).start()
+    time.sleep(.05)
+    with LOCK:
+        return jsonify(JOBS["od_decision"])
+
 
 @app.post("/start-download")
 def start_download():
