@@ -24,6 +24,7 @@ from qc_stocks_in_play_benchmark_v1 import run_qc_stocks_in_play_benchmark
 from qc_1min_oos_resolver_v1 import run_qc_1min_oos_resolver
 from backtrader_execution_parity_v1 import run_backtrader_execution_parity
 from backtrader_execution_parity_v2 import run_backtrader_parity_v2
+from trade_level_parity_audit_v1 import run_trade_level_parity_audit
 
 app = Flask(__name__)
 
@@ -78,6 +79,7 @@ JOBS = {
     "qc_1m": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "bt_parity": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "bt_parity_v2": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
+    "trade_parity": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
 }
 
 HTML = """
@@ -376,6 +378,18 @@ th:first-child,td:first-child{text-align:left}
 <div class="track"><div id="bt_parity_v2Bar" class="bar"></div></div>
 <div id="bt_parity_v2Msg" class="msg">尚未开始</div>
 <div id="bt_parity_v2Results" class="scroll"></div>
+</div>
+
+<div class="card">
+<h2>24. Trade-Level Parity Audit v1</h2>
+<p><b>只解释 23 的 21.1% 逐笔差异，不重跑模型。</b></p>
+<p class="muted">读取 21 的 1-minute Lower/Upper + 23 的 Backtrader trade_results，逐笔核对 161 笔 ambiguity。只对落在边界之外的交易读取已缓存 1-minute window，检查 Entry fill、Stop/Exit 顺序与时间。</p>
+<p class="muted">不重新下载、不扫参数、不改选股、不改 Entry/Stop/Exit。跑完只回答一个问题：为什么 Backtrader 有约34笔落在21边界之外，这些差异是否属于合理的 execution-model semantics。</p>
+<button id="trade_parityBtn" type="button">Run Trade-Level Parity Audit</button>
+<div class="row"><b>Audit 进度</b><span id="trade_parityPct">0%</span></div>
+<div class="track"><div id="trade_parityBar" class="bar"></div></div>
+<div id="trade_parityMsg" class="msg">尚未开始</div>
+<div id="trade_parityResults" class="scroll"></div>
 </div>
 
 <div class="card">
@@ -795,6 +809,24 @@ function renderBTParityV2(r){
  $("bt_parity_v2Results").innerHTML=h;
 }
 
+
+function renderTradeParity(r){
+ if(!r)return;
+ let h=`<p><b>${r.study}</b></p>`;
+ h+=`<p><b>Checked:</b> ${r.ambiguous_trades_checked} · <b>Inside:</b> ${r.inside_bounds} (${(Number(r.inside_share||0)*100).toFixed(1)}%) · <b>Outside:</b> ${r.outside_bounds}</p>`;
+ h+=`<p><b>Below lower:</b> ${r.below_lower} · <b>Above upper:</b> ${r.above_upper}</p>`;
+ h+=`<p><b>Likely reasons:</b> ${JSON.stringify(r.likely_reason_counts||{})}</p>`;
+ const tbl=(title,rows)=>{
+   let x=`<h3>${title}</h3><table><thead><tr><th>#</th><th>Symbol</th><th>Date</th><th>Side</th><th>Lower</th><th>Upper</th><th>BT R</th><th>Δ</th><th>EntryFill</th><th>ExitFill</th><th>Exit</th></tr></thead><tbody>`;
+   (rows||[]).forEach(z=>x+=`<tr><td>${z.row_pos}</td><td>${z.symbol}</td><td>${z.date}</td><td>${z.side}</td><td>${z.lower_21_r}</td><td>${z.upper_21_r}</td><td>${z.backtrader_r}</td><td>${z.distance_outside}</td><td>${z.bt_entry_fill}</td><td>${z.bt_exit_fill}</td><td>${z.bt_exit_reason}</td></tr>`);
+   return x+'</tbody></table>';
+ };
+ h+=tbl("Largest below-lower differences",r.largest_negative_outside);
+ h+=tbl("Largest above-upper differences",r.largest_positive_outside);
+ h+=`<p><b>Decision:</b> ${r.decision_rule}</p>`;
+ $("trade_parityResults").innerHTML=h;
+}
+
 async function poll(kind){
   try{
     const r=await fetch("/job/"+kind,{cache:"no-store"});
@@ -820,6 +852,7 @@ async function poll(kind){
     if(d.result && kind==="qc_1m") renderQC1m(d.result);
     if(d.result && kind==="bt_parity") renderBTParity(d.result);
     if(d.result && kind==="bt_parity_v2") renderBTParityV2(d.result);
+    if(d.result && kind==="trade_parity") renderTradeParity(d.result);
     if(d.data_exists) $("dataState").textContent="✅ Data ready";
     if(d.running) setTimeout(()=>poll(kind),800);
   }catch(e){
@@ -887,7 +920,7 @@ $("autopsyBtn").addEventListener("click", async ()=>{
 $("tournamentBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-tournament",{method:"POST"})).json(); setProgress("tournament",d); poll("tournament"); });
 
 $("od_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-audit",{method:"POST"})).json(); setProgress("od_audit",d); poll("od_audit"); });
-$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); poll("orig_v01"); poll("parity_audit"); poll("orig_tz"); poll("qc_bench"); poll("qc_1m"); poll("bt_parity"); poll("bt_parity_v2"); });
+$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); poll("orig_v01"); poll("parity_audit"); poll("orig_tz"); poll("qc_bench"); poll("qc_1m"); poll("bt_parity"); poll("bt_parity_v2"); poll("trade_parity"); });
 $("orb_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-orb-audit",{method:"POST"})).json(); setProgress("orb_audit",d); poll("orb_audit"); });
 $("fp_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-fp-audit",{method:"POST"})).json(); setProgress("fp_audit",d); poll("fp_audit"); });
 $("mc_trialBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-mc-trial",{method:"POST"})).json(); setProgress("mc_trial",d); poll("mc_trial"); });
@@ -898,6 +931,7 @@ $("qc_benchBtn").addEventListener("click", async ()=>{ const d=await (await fetc
 $("qc_1mBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-qc-1m",{method:"POST"})).json(); setProgress("qc_1m",d); poll("qc_1m"); });
 $("bt_parityBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-bt-parity",{method:"POST"})).json(); setProgress("bt_parity",d); poll("bt_parity"); });
 $("bt_parity_v2Btn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-bt-parity-v2",{method:"POST"})).json(); setProgress("bt_parity_v2",d); poll("bt_parity_v2"); });
+$("trade_parityBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-trade-parity",{method:"POST"})).json(); setProgress("trade_parity",d); poll("trade_parity"); });
 
 $("rescanBtn").addEventListener("click", async ()=>{
   try{
@@ -1954,6 +1988,29 @@ def start_bt_parity_v2():
     time.sleep(.05)
     with LOCK:
         return jsonify(JOBS["bt_parity_v2"])
+
+
+
+def trade_parity_worker():
+    try:
+        def cb(pct,msg): set_job("trade_parity",running=True,progress=int(pct),message=msg,ok=None)
+        set_job("trade_parity",running=True,progress=1,message="读取21/23现有结果；不重跑策略…",ok=None,result=None)
+        result=run_trade_level_parity_audit(progress_cb=cb)
+        set_job("trade_parity",running=False,progress=100,
+                message=f"✅ Trade-Level Audit 完成 · outside {result['outside_bounds']}/{result['ambiguous_trades_checked']}",
+                ok=True,result=result)
+    except Exception as e:
+        set_job("trade_parity",running=False,progress=100,message=f"❌ {type(e).__name__}: {e}",ok=False)
+
+@app.post("/start-trade-parity")
+def start_trade_parity():
+    with LOCK:
+        if JOBS["trade_parity"]["running"]:
+            return jsonify(JOBS["trade_parity"])
+    threading.Thread(target=trade_parity_worker,daemon=True).start()
+    time.sleep(.05)
+    with LOCK:
+        return jsonify(JOBS["trade_parity"])
 
 
 @app.post("/start-download")
