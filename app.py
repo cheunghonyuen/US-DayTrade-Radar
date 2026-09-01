@@ -27,6 +27,7 @@ from backtrader_execution_parity_v2 import run_backtrader_parity_v2
 from trade_level_parity_audit_v1 import run_trade_level_parity_audit
 from entry_fill_truth_audit_v1 import run_entry_fill_truth_audit
 from paper_forward_test_v1 import run_paper_forward_update
+from paper_command_center_v1 import load_command_center
 
 app = Flask(__name__)
 
@@ -84,6 +85,7 @@ JOBS = {
     "trade_parity": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "entry_truth": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "paper_fwd": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
+    "command_center": {"running": False, "progress": 0, "message": "尚未刷新", "ok": None, "result": None},
 }
 
 HTML = """
@@ -121,6 +123,17 @@ th:first-child,td:first-child{text-align:left}
 <body>
 <div class="wrap">
 <h1>🇺🇸 US DayTrade Radar <small>Original Engine Parity Audit v1</small></h1>
+
+<div class="card">
+<h2>27. Paper Trading Command Center v1</h2>
+<p><b>26 的只读实战观察台。</b> 不改策略、不下载新历史、不重新计算旧交易。</p>
+<p class="muted">显示 Frozen ledger 的 Latest Day Trades、累计 PF / AvgR / NetR / MaxDD、逐日表现、Equity Curve，以及 20交易日 + 100 trades 的正式裁决 Gate。</p>
+<button id="command_centerBtn" type="button">Refresh Command Center</button>
+<div class="row"><b>Command Center</b><span id="command_centerPct">0%</span></div>
+<div class="track"><div id="command_centerBar" class="bar"></div></div>
+<div id="command_centerMsg" class="msg">尚未刷新</div>
+<div id="command_centerResults" class="scroll"></div>
+</div>
 
 <div class="card">
 <h2>1. Preflight</h2>
@@ -886,6 +899,42 @@ function renderPaperFwd(r){
  $("paper_fwdResults").innerHTML=h;
 }
 
+
+function renderCommandCenter(r){
+ if(!r)return;
+ const s=r.overall||{}, g=r.gate||{};
+ const pct=x=>(Number(x||0)*100).toFixed(1);
+ let h=`<p><b>${r.study}</b> · 🔒 <b>FROZEN READ-ONLY</b></p>`;
+ h+=`<p><b>Latest day:</b> ${r.latest_date||"—"} · <b>Freeze hash:</b> ${(r.freeze_hash||"").slice(0,12)}…</p>`;
+ h+='<table><thead><tr><th>Trades</th><th>Win%</th><th>PF</th><th>AvgR</th><th>NetR</th><th>MedianR</th><th>MaxDD(R)</th></tr></thead><tbody>';
+ h+=`<tr><td>${s.trades??0}</td><td>${pct(s.win_rate)}</td><td>${s.profit_factor??0}</td><td>${s.avg_r??0}</td><td>${s.net_r??0}</td><td>${s.median_r??0}</td><td>${s.max_dd_r??0}</td></tr></tbody></table>`;
+
+ h+=`<h3>Forward Gate</h3><p><b>Days:</b> ${g.days??0}/${g.days_target??20} (${pct(g.days_pct)}) · <b>Trades:</b> ${g.trades??0}/${g.trades_target??100} (${pct(g.trades_pct)}) · <b>Ready:</b> ${g.ready_for_judgement?"YES":"NO"}</p>`;
+
+ const curve=r.equity_curve||[];
+ if(curve.length){
+   const vals=curve.map(x=>Number(x.cum_r||0)), w=760,hg=180,pad=18;
+   let mn=Math.min(0,...vals), mx=Math.max(0,...vals); if(mx===mn){mx=mn+1;}
+   const pts=vals.map((v,i)=>{
+      const x=pad+(w-2*pad)*(i/Math.max(vals.length-1,1));
+      const y=pad+(hg-2*pad)*(1-(v-mn)/(mx-mn));
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+   }).join(" ");
+   const zy=pad+(hg-2*pad)*(1-(0-mn)/(mx-mn));
+   h+=`<h3>Equity Curve · cumulative R</h3><svg viewBox="0 0 ${w} ${hg}" style="width:100%;max-height:220px;border:1px solid #ddd;border-radius:8px"><line x1="${pad}" y1="${zy}" x2="${w-pad}" y2="${zy}" stroke="currentColor" opacity=".25"/><polyline points="${pts}" fill="none" stroke="currentColor" stroke-width="2"/></svg>`;
+ }
+
+ h+='<h3>Latest Day Trades</h3><table><thead><tr><th>Symbol</th><th>Side</th><th>RVOL</th><th>Entry</th><th>Stop</th><th>Fill</th><th>Exit</th><th>Reason</th><th>PnL R</th></tr></thead><tbody>';
+ (r.latest_trades||[]).forEach(x=>h+=`<tr><td>${x.symbol??""}</td><td>${x.side??""}</td><td>${x.rvol??""}</td><td>${x.intended_entry??""}</td><td>${x.stop??""}</td><td>${x.entry_fill??""}</td><td>${x.exit_fill??""}</td><td>${x.exit_reason??""}</td><td>${x.pnl_r??""}</td></tr>`);
+ h+='</tbody></table>';
+
+ h+='<h3>Daily Checkpoints</h3><table><thead><tr><th>Date</th><th>Trades</th><th>Win%</th><th>PF</th><th>AvgR</th><th>NetR</th><th>MaxDD</th></tr></thead><tbody>';
+ (r.daily||[]).slice().reverse().forEach(x=>h+=`<tr><td>${x.date}</td><td>${x.trades}</td><td>${pct(x.win_rate)}</td><td>${x.profit_factor}</td><td>${x.avg_r}</td><td>${x.net_r}</td><td>${x.max_dd_r}</td></tr>`);
+ h+='</tbody></table>';
+ h+=`<p><b>Guardrail:</b> ${r.guardrail||""}</p>`;
+ $("command_centerResults").innerHTML=h;
+}
+
 async function poll(kind){
   try{
     const r=await fetch("/job/"+kind,{cache:"no-store"});
@@ -914,6 +963,7 @@ async function poll(kind){
     if(d.result && kind==="trade_parity") renderTradeParity(d.result);
     if(d.result && kind==="entry_truth") renderEntryTruth(d.result);
     if(d.result && kind==="paper_fwd") renderPaperFwd(d.result);
+    if(d.result && kind==="command_center") renderCommandCenter(d.result);
     if(d.data_exists) $("dataState").textContent="✅ Data ready";
     if(d.running) setTimeout(()=>poll(kind),800);
   }catch(e){
@@ -981,7 +1031,7 @@ $("autopsyBtn").addEventListener("click", async ()=>{
 $("tournamentBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-tournament",{method:"POST"})).json(); setProgress("tournament",d); poll("tournament"); });
 
 $("od_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-audit",{method:"POST"})).json(); setProgress("od_audit",d); poll("od_audit"); });
-$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); poll("orig_v01"); poll("parity_audit"); poll("orig_tz"); poll("qc_bench"); poll("qc_1m"); poll("bt_parity"); poll("bt_parity_v2"); poll("trade_parity"); poll("entry_truth"); poll("paper_fwd"); });
+$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); poll("orig_v01"); poll("parity_audit"); poll("orig_tz"); poll("qc_bench"); poll("qc_1m"); poll("bt_parity"); poll("bt_parity_v2"); poll("trade_parity"); poll("entry_truth"); poll("paper_fwd"); poll("command_center"); });
 $("orb_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-orb-audit",{method:"POST"})).json(); setProgress("orb_audit",d); poll("orb_audit"); });
 $("fp_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-fp-audit",{method:"POST"})).json(); setProgress("fp_audit",d); poll("fp_audit"); });
 $("mc_trialBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-mc-trial",{method:"POST"})).json(); setProgress("mc_trial",d); poll("mc_trial"); });
@@ -995,6 +1045,7 @@ $("bt_parity_v2Btn").addEventListener("click", async ()=>{ const d=await (await 
 $("trade_parityBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-trade-parity",{method:"POST"})).json(); setProgress("trade_parity",d); poll("trade_parity"); });
 $("entry_truthBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-entry-truth",{method:"POST"})).json(); setProgress("entry_truth",d); poll("entry_truth"); });
 $("paper_fwdBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-paper-fwd",{method:"POST"})).json(); setProgress("paper_fwd",d); poll("paper_fwd"); });
+$("command_centerBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-command-center",{method:"POST"})).json(); setProgress("command_center",d); poll("command_center"); });
 
 $("rescanBtn").addEventListener("click", async ()=>{
   try{
@@ -2120,6 +2171,28 @@ def start_paper_fwd():
     time.sleep(.05)
     with LOCK:
         return jsonify(JOBS["paper_fwd"])
+
+
+
+def command_center_worker():
+    try:
+        set_job("command_center",running=True,progress=25,message="读取 Frozen ledger / state / freeze manifest…",ok=None,result=None)
+        result=load_command_center()
+        set_job("command_center",running=False,progress=100,
+                message=f"✅ Command Center · {result.get('latest_date','—')} · {result.get('overall',{}).get('trades',0)} trades · PF {result.get('overall',{}).get('profit_factor',0)}",
+                ok=True,result=result)
+    except Exception as e:
+        set_job("command_center",running=False,progress=100,message=f"❌ {type(e).__name__}: {e}",ok=False)
+
+@app.post("/start-command-center")
+def start_command_center():
+    with LOCK:
+        if JOBS["command_center"]["running"]:
+            return jsonify(JOBS["command_center"])
+    threading.Thread(target=command_center_worker,daemon=True).start()
+    time.sleep(.05)
+    with LOCK:
+        return jsonify(JOBS["command_center"])
 
 
 @app.post("/start-download")
