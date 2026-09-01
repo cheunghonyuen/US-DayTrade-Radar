@@ -29,6 +29,7 @@ from entry_fill_truth_audit_v1 import run_entry_fill_truth_audit
 from paper_forward_test_v1 import run_paper_forward_update
 from paper_command_center_v1 import load_command_center
 from external_challenger_sam_bateman_v1 import run_external_challenger
+from external_challenger_alpaca_momentum_v1 import run_alpaca_momentum_challenger
 
 app = Flask(__name__)
 
@@ -88,6 +89,7 @@ JOBS = {
     "paper_fwd": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "command_center": {"running": False, "progress": 0, "message": "尚未刷新", "ok": None, "result": None},
     "ext_challenger": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
+    "alpaca_mom": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
 }
 
 HTML = """
@@ -126,6 +128,17 @@ th:first-child,td:first-child{text-align:left}
 <div class="wrap">
 <h1>🇺🇸 US DayTrade Radar <small>Original Engine Parity Audit v1</small></h1>
 
+<div class="card">
+<h2>29. External Challenger #2 · Alpaca Momentum v1</h2>
+<p><b>这次换真正不同的 edge family：官方 Alpaca Intraday Momentum Example。</b> 26 Frozen Champion 完全不动。</p>
+<p class="muted">原版核心：只做 Long；$2–$13；前日 Dollar Volume &gt;$500k；当日涨幅先过3.5%；开盘15–60分钟内，涨幅&gt;4% + 突破首15分钟高点 + 当日量&gt;30k；MACD(12,26)正且连续增强，MACD(40,60)正且上升。Stop 用最近5min local low，否则5% stop；Target=3R；MACD(13,21)参与退出；收盘前15分钟清仓。</p>
+<p class="muted">公平测试：同一125股票 Discovery + True OOS。原例未建模摩擦，这里额外加入我们统一的 $0.01/share slippage + $0.005/share commission，避免把成绩做漂亮。绝不扫参数。</p>
+<button id="alpaca_momBtn" type="button">Run External Challenger #2</button>
+<div class="row"><b>Challenger #2 进度</b><span id="alpaca_momPct">0%</span></div>
+<div class="track"><div id="alpaca_momBar" class="bar"></div></div>
+<div id="alpaca_momMsg" class="msg">尚未开始</div>
+<div id="alpaca_momResults" class="scroll"></div>
+</div>
 <div class="card">
 <h2>28. External Challenger #1 · trading-orb v1</h2>
 <p><b>外部原版 Challenger，不改26。</b> 来源：sam-bateman/trading-orb 的 10-year validated final config。</p>
@@ -966,6 +979,20 @@ function renderExtChallenger(r){
  $("ext_challengerResults").innerHTML=h;
 }
 
+
+function renderAlpacaMom(r){
+ if(!r)return;
+ const d=(r.discovery||{}).metrics||{}, o=(r.true_oos||{}).metrics||{}, b=(r.true_oos||{}).bootstrap||{};
+ const pct=x=>(Number(x||0)*100).toFixed(1);
+ let h=`<p><b>${r.study}</b></p><p>${r.source_fidelity_note||""}</p>`;
+ h+='<table><thead><tr><th>Period</th><th>Trades</th><th>Win%</th><th>PF</th><th>AvgR</th><th>MedianR</th><th>MaxDD(R)</th><th>Net PnL</th></tr></thead><tbody>';
+ h+=`<tr><td>Discovery</td><td>${d.trades??0}</td><td>${pct(d.win_rate)}</td><td>${d.profit_factor??0}</td><td>${d.avg_r??0}</td><td>${d.median_r??0}</td><td>${d.max_dd_r??0}</td><td>${d.net_pnl??0}</td></tr>`;
+ h+=`<tr><td>True OOS</td><td>${o.trades??0}</td><td>${pct(o.win_rate)}</td><td>${o.profit_factor??0}</td><td>${o.avg_r??0}</td><td>${o.median_r??0}</td><td>${o.max_dd_r??0}</td><td>${o.net_pnl??0}</td></tr></tbody></table>`;
+ h+=`<p><b>OOS bootstrap:</b> P(PF&gt;1) ${pct(b.prob_pf_gt1)} · PF95% [${(b.pf_ci95||[]).join(", ")}] · P(AvgR&gt;0) ${pct(b.prob_avg_r_gt0)}</p>`;
+ h+=`<p><b>Decision:</b> ${r.decision_rule||""}</p>`;
+ $("alpaca_momResults").innerHTML=h;
+}
+
 async function poll(kind){
   try{
     const r=await fetch("/job/"+kind,{cache:"no-store"});
@@ -996,6 +1023,7 @@ async function poll(kind){
     if(d.result && kind==="paper_fwd") renderPaperFwd(d.result);
     if(d.result && kind==="command_center") renderCommandCenter(d.result);
     if(d.result && kind==="ext_challenger") renderExtChallenger(d.result);
+    if(d.result && kind==="alpaca_mom") renderAlpacaMom(d.result);
     if(d.data_exists) $("dataState").textContent="✅ Data ready";
     if(d.running) setTimeout(()=>poll(kind),800);
   }catch(e){
@@ -1063,7 +1091,7 @@ $("autopsyBtn").addEventListener("click", async ()=>{
 $("tournamentBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-tournament",{method:"POST"})).json(); setProgress("tournament",d); poll("tournament"); });
 
 $("od_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-audit",{method:"POST"})).json(); setProgress("od_audit",d); poll("od_audit"); });
-$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); poll("orig_v01"); poll("parity_audit"); poll("orig_tz"); poll("qc_bench"); poll("qc_1m"); poll("bt_parity"); poll("bt_parity_v2"); poll("trade_parity"); poll("entry_truth"); poll("paper_fwd"); poll("command_center"); poll("ext_challenger"); });
+$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); poll("orig_v01"); poll("parity_audit"); poll("orig_tz"); poll("qc_bench"); poll("qc_1m"); poll("bt_parity"); poll("bt_parity_v2"); poll("trade_parity"); poll("entry_truth"); poll("paper_fwd"); poll("command_center"); poll("ext_challenger"); poll("alpaca_mom"); });
 $("orb_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-orb-audit",{method:"POST"})).json(); setProgress("orb_audit",d); poll("orb_audit"); });
 $("fp_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-fp-audit",{method:"POST"})).json(); setProgress("fp_audit",d); poll("fp_audit"); });
 $("mc_trialBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-mc-trial",{method:"POST"})).json(); setProgress("mc_trial",d); poll("mc_trial"); });
@@ -1079,6 +1107,7 @@ $("entry_truthBtn").addEventListener("click", async ()=>{ const d=await (await f
 $("paper_fwdBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-paper-fwd",{method:"POST"})).json(); setProgress("paper_fwd",d); poll("paper_fwd"); });
 $("command_centerBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-command-center",{method:"POST"})).json(); setProgress("command_center",d); poll("command_center"); });
 $("ext_challengerBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-ext-challenger",{method:"POST"})).json(); setProgress("ext_challenger",d); poll("ext_challenger"); });
+$("alpaca_momBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-alpaca-mom",{method:"POST"})).json(); setProgress("alpaca_mom",d); poll("alpaca_mom"); });
 
 $("rescanBtn").addEventListener("click", async ()=>{
   try{
@@ -2251,6 +2280,31 @@ def start_ext_challenger():
     time.sleep(.05)
     with LOCK:
         return jsonify(JOBS["ext_challenger"])
+
+
+
+def alpaca_mom_worker():
+    try:
+        def cb(pct,msg): set_job("alpaca_mom",running=True,progress=int(pct),message=msg,ok=None)
+        set_job("alpaca_mom",running=True,progress=1,message="Alpaca official momentum · Data Manifest / schema preflight…",ok=None,result=None)
+        result=run_alpaca_momentum_challenger(progress_cb=cb)
+        m=result["true_oos"]["metrics"]; b=result["true_oos"]["bootstrap"]
+        passed=(m["trades"]>=100 and m["profit_factor"]>1 and m["avg_r"]>0 and b.get("prob_pf_gt1",0)>=0.80)
+        set_job("alpaca_mom",running=False,progress=100,
+                message=f"✅ Challenger #2 · OOS {m['trades']} trades · PF {m['profit_factor']} · {'PROMOTE' if passed else 'DROP'}",
+                ok=True,result=result)
+    except Exception as e:
+        set_job("alpaca_mom",running=False,progress=100,message=f"❌ {type(e).__name__}: {e}",ok=False)
+
+@app.post("/start-alpaca-mom")
+def start_alpaca_mom():
+    with LOCK:
+        if JOBS["alpaca_mom"]["running"]:
+            return jsonify(JOBS["alpaca_mom"])
+    threading.Thread(target=alpaca_mom_worker,daemon=True).start()
+    time.sleep(.05)
+    with LOCK:
+        return jsonify(JOBS["alpaca_mom"])
 
 
 @app.post("/start-download")
