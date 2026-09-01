@@ -1,4 +1,4 @@
-import json, os, sys, threading, time, re
+import json, os, sys, threading, time, re, math
 from pathlib import Path
 from datetime import date, timedelta
 
@@ -36,7 +36,14 @@ from alpaca_momentum_source_locked_v2 import run_alpaca_momentum_source_locked_v
 from external_challenger3_vwap_mean_reversion_v1 import run_external_challenger3
 from historical_depth_preflight_v1 import run_historical_depth_preflight, run_historical_depth_build
 from pairs_walkforward_v1 import run_pairs_walkforward
-from pairs_walkforward_resumable_v2 import run_pairs_runtime_preflight, run_pairs_walkforward_resumable
+try:
+    from pairs_walkforward_resumable_v2 import run_pairs_runtime_preflight, run_pairs_walkforward_resumable
+    PAIRS_V2_IMPORT_ERROR = None
+except Exception as _pairs_v2_import_exc:
+    run_pairs_runtime_preflight = None
+    run_pairs_walkforward_resumable = None
+    PAIRS_V2_IMPORT_ERROR = f"{type(_pairs_v2_import_exc).__name__}: {_pairs_v2_import_exc}"
+
 
 app = Flask(__name__)
 
@@ -147,6 +154,7 @@ th:first-child,td:first-child{text-align:left}
 <div class="card">
 <h2>36. Pairs Walk-Forward · Resumable Runtime v2</h2>
 <p><b>只修35的运行架构，不改任何交易/筛选参数。</b></p>
+<p class="muted"><b>Deploy Guard:</b> 本版即使 pairs module 缺失也不会把整站打崩；A/B 会直接显示缺失模块或 import 错误。请确保 app.py 与 pairs_walkforward_resumable_v2.py 同时上传。</p>
 <p class="muted">A先做 Runtime/Schema Preflight：确认34的125个daily文件、schema、statsmodels/coint依赖、当前RSS内存。PASS才允许B。</p>
 <p class="muted">B按fold checkpoint：每个fold单独写 /data/daytrade/pairs_walkforward_v2/folds；pair检验按小批次跑，完成一个fold立即落盘并释放DataFrame。Railway中断后重新按B会从未完成fold继续，不从头重跑。</p>
 <button id="pairs_pre_v2Btn">A. Run Pairs Runtime Preflight</button>
@@ -2677,6 +2685,11 @@ def start_pairs_wf():
 
 def pairs_pre_v2_worker():
     try:
+        if PAIRS_V2_IMPORT_ERROR:
+            raise RuntimeError(
+                "pairs_walkforward_resumable_v2.py import failed: " + PAIRS_V2_IMPORT_ERROR +
+                " | Upload this module together with app.py."
+            )
         def cb(p,m): set_job("pairs_pre_v2",running=True,progress=int(p),message=m,ok=None)
         set_job("pairs_pre_v2",running=True,progress=1,message="Pairs Runtime/Schema Preflight…",ok=None,result=None)
         r=run_pairs_runtime_preflight(progress_cb=cb)
@@ -2692,6 +2705,11 @@ def start_pairs_pre_v2():
 
 def pairs_v2_worker():
     try:
+        if PAIRS_V2_IMPORT_ERROR:
+            raise RuntimeError(
+                "pairs_walkforward_resumable_v2.py import failed: " + PAIRS_V2_IMPORT_ERROR +
+                " | Upload this module together with app.py."
+            )
         def cb(p,m): set_job("pairs_v2",running=True,progress=int(p if p is not None else JOBS["pairs_v2"]["progress"]),message=m,ok=None)
         set_job("pairs_v2",running=True,progress=1,message="Resumable pairs walk-forward：checkpoint/reuse enabled…",ok=None,result=None)
         r=run_pairs_walkforward_resumable(progress_cb=cb)
