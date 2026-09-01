@@ -12,6 +12,7 @@ from robustness_v07 import run_robustness_v07
 from true_oos_v08 import run_true_oos_v08
 from oos_failure_v09 import run_oos_failure_autopsy
 from setup_tournament_v1 import run_setup_tournament
+from opening_drive_audit_v1 import run_opening_drive_audit
 
 app = Flask(__name__)
 
@@ -54,6 +55,7 @@ JOBS = {
     "oos": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "autopsy": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "tournament": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
+    "od_audit": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
 }
 
 HTML = """
@@ -61,7 +63,7 @@ HTML = """
 <html lang="zh">
 <head>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>US DayTrade Setup Tournament v1</title>
+<title>US DayTrade Radar · Opening Drive Audit</title>
 <style>
 body{font-family:-apple-system,BlinkMacSystemFont,Arial,sans-serif;background:#f4f6f8;margin:0;padding:16px;color:#111}
 .wrap{max-width:900px;margin:auto}
@@ -90,7 +92,7 @@ th:first-child,td:first-child{text-align:left}
 </head>
 <body>
 <div class="wrap">
-<h1>🇺🇸 US DayTrade Radar <small>Setup Tournament v1</small></h1>
+<h1>🇺🇸 US DayTrade Radar <small>Opening Drive Audit v1</small></h1>
 
 <div class="card">
 <h2>1. Preflight</h2>
@@ -211,6 +213,17 @@ th:first-child,td:first-child{text-align:left}
 <div class="track"><div id="tournamentBar" class="bar"></div></div>
 <div id="tournamentMsg" class="msg">尚未开始</div>
 <div id="tournamentResults" class="scroll"></div>
+</div>
+
+<div class="card">
+<h2>12. Opening Drive Audit v1</h2>
+<p><b>主线候选：</b> Opening Drive</p>
+<p class="muted">不调参数。直接审计 Tournament 已保存的 Discovery + True OOS Opening Drive trades：月度稳定性、H1/H2、Winner Concentration、3000次 Bootstrap。</p>
+<button id="od_auditBtn" type="button">Run Opening Drive Audit</button>
+<div class="row"><b>Audit 进度</b><span id="od_auditPct">0%</span></div>
+<div class="track"><div id="od_auditBar" class="bar"></div></div>
+<div id="od_auditMsg" class="msg">尚未开始</div>
+<div id="od_auditResults" class="scroll"></div>
 </div>
 
 <div class="card">
@@ -414,6 +427,21 @@ function renderTournament(r){
   if(r.winner)h+=`<p><b>Current Leader:</b> ${r.winner.setup} · ${r.winner.verdict}</p>`;
   $("tournamentResults").innerHTML=h;
 }
+
+function renderODAudit(r){
+ if(!r)return; const d=r.discovery||{},o=r.oos||{},c=r.oos_winner_concentration||{},b=r.oos_bootstrap||{};
+ let h=`<p><b>${r.study}</b> · <b>${r.verdict}</b> · ${r.checks_passed}/${r.checks_total}</p>`;
+ h+=`<p><b>Discovery:</b> ${d.trades} trades · PF ${d.profit_factor} · AvgR ${d.avg_r}</p>`;
+ h+=`<p><b>True OOS:</b> ${o.trades} trades · PF ${o.profit_factor} · AvgR ${o.avg_r} · Win ${(Number(o.win_rate||0)*100).toFixed(1)}%</p>`;
+ h+=`<p><b>OOS Winner Concentration:</b> Top1 ${(Number(c.top1_share||0)*100).toFixed(1)}% · Top3 ${(Number(c.top3_share||0)*100).toFixed(1)}% · Top5 ${(Number(c.top5_share||0)*100).toFixed(1)}%</p>`;
+ h+=`<p><b>OOS Bootstrap:</b> AvgR CI [${(b.avg_r_ci95||[]).join(", ")}] · PF CI [${(b.pf_ci95||[]).join(", ")}] · P(PF>1) ${(Number(b.prob_pf_gt1||0)*100).toFixed(1)}%</p>`;
+ h+='<h3>OOS Half Split</h3><table><thead><tr><th>Half</th><th>Trades</th><th>Win%</th><th>PF</th><th>AvgR</th></tr></thead><tbody>';
+ (r.oos_halves||[]).forEach(x=>h+=`<tr><td>${x.half}</td><td>${x.trades}</td><td>${(Number(x.win_rate||0)*100).toFixed(1)}</td><td>${x.profit_factor}</td><td>${x.avg_r}</td></tr>`);
+ h+='</tbody></table><h3>Checks</h3><table><tbody>';
+ Object.entries(r.checks||{}).forEach(([k,v])=>h+=`<tr><td>${k}</td><td><b>${v?"✅ PASS":"❌ FAIL"}</b></td></tr>`);
+ h+='</tbody></table>';
+ $("od_auditResults").innerHTML=h;
+}
 async function poll(kind){
   try{
     const r=await fetch("/job/"+kind,{cache:"no-store"});
@@ -427,6 +455,7 @@ async function poll(kind){
     if(d.result && kind==="oos") renderOOS(d.result);
     if(d.result && kind==="autopsy") renderAutopsy(d.result);
     if(d.result && kind==="tournament") renderTournament(d.result);
+    if(d.result && kind==="od_audit") renderODAudit(d.result);
     if(d.data_exists) $("dataState").textContent="✅ Data ready";
     if(d.running) setTimeout(()=>poll(kind),800);
   }catch(e){
@@ -493,6 +522,8 @@ $("autopsyBtn").addEventListener("click", async ()=>{
 
 $("tournamentBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-tournament",{method:"POST"})).json(); setProgress("tournament",d); poll("tournament"); });
 
+$("od_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-audit",{method:"POST"})).json(); setProgress("od_audit",d); poll("od_audit"); });
+
 $("rescanBtn").addEventListener("click", async ()=>{
   try{
     const d=await (await fetch("/rescan-data",{method:"POST"})).json();
@@ -503,7 +534,7 @@ $("rescanBtn").addEventListener("click", async ()=>{
   }
 });
 
-poll("download"); poll("backtest"); poll("matrix"); poll("ladder"); poll("dna"); poll("entryq"); poll("robust"); poll("oosdl"); poll("oos"); poll("autopsy"); poll("tournament");
+poll("download"); poll("backtest"); poll("matrix"); poll("ladder"); poll("dna"); poll("entryq"); poll("robust"); poll("oosdl"); poll("oos"); poll("autopsy"); poll("tournament"); poll("od_audit");
 </script>
 </body>
 </html>
@@ -662,7 +693,7 @@ def index():
 @app.post("/preflight")
 def preflight():
     checks=[]; ok=True
-    for f in ["engine.py","run_backtest.py","prepare_tiingo_data.py","prepare_sip_data.py","filter_ladder.py","winner_loser_diag.py","entry_quality_v06.py","robustness_v07.py","true_oos_v08.py","oos_failure_v09.py","setup_tournament_v1.py","config.json"]:
+    for f in ["engine.py","run_backtest.py","prepare_tiingo_data.py","prepare_sip_data.py","filter_ladder.py","winner_loser_diag.py","entry_quality_v06.py","robustness_v07.py","true_oos_v08.py","oos_failure_v09.py","setup_tournament_v1.py","opening_drive_audit_v1.py","config.json"]:
         exists=(BASE/f).exists()
         checks.append(f"{'OK' if exists else 'FAIL'} file {f}")
         ok = ok and exists
@@ -1132,6 +1163,28 @@ def start_tournament():
     threading.Thread(target=tournament_worker,daemon=True).start()
     time.sleep(.05)
     with LOCK:return jsonify(JOBS["tournament"])
+
+
+def od_audit_worker():
+    tdir=OUT/"setup_tournament_v1"
+    dpath=tdir/"opening_drive_discovery.csv"
+    opath=tdir/"opening_drive_oos.csv"
+    if not dpath.exists() or not opath.exists():
+        set_job("od_audit",running=False,progress=100,message="❌ 找不到 Opening Drive tournament trade files。先跑 Setup Tournament v1；不要重新下载数据。",ok=False); return
+    try:
+        def cb(pct,msg): set_job("od_audit",running=True,progress=int(pct),message=msg,ok=None)
+        set_job("od_audit",running=True,progress=1,message="读取 Tournament Opening Drive trades…",ok=None,result=None)
+        result=run_opening_drive_audit(str(dpath),str(opath),str(tdir/"opening_drive_audit_v1"),progress_cb=cb)
+        set_job("od_audit",running=False,progress=100,message=f"✅ Opening Drive Audit 完成：{result['verdict']} · {result['checks_passed']}/{result['checks_total']}",ok=True,result=result)
+    except Exception as e:
+        set_job("od_audit",running=False,progress=100,message=f"❌ {type(e).__name__}: {e}",ok=False)
+
+@app.post("/start-od-audit")
+def start_od_audit():
+    with LOCK:
+        if JOBS["od_audit"]["running"]: return jsonify(JOBS["od_audit"])
+    threading.Thread(target=od_audit_worker,daemon=True).start(); time.sleep(.05)
+    with LOCK:return jsonify(JOBS["od_audit"])
 
 @app.post("/start-download")
 def start_download():
