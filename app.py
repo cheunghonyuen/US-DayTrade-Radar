@@ -23,6 +23,7 @@ from original_v01_tzfixed_replay import run_original_tz_fixed_replay
 from qc_stocks_in_play_benchmark_v1 import run_qc_stocks_in_play_benchmark
 from qc_1min_oos_resolver_v1 import run_qc_1min_oos_resolver
 from backtrader_execution_parity_v1 import run_backtrader_execution_parity
+from backtrader_execution_parity_v2 import run_backtrader_parity_v2
 
 app = Flask(__name__)
 
@@ -76,6 +77,7 @@ JOBS = {
     "qc_bench": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "qc_1m": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "bt_parity": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
+    "bt_parity_v2": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
 }
 
 HTML = """
@@ -362,6 +364,18 @@ th:first-child,td:first-child{text-align:left}
 <div class="track"><div id="bt_parityBar" class="bar"></div></div>
 <div id="bt_parityMsg" class="msg">尚未开始</div>
 <div id="bt_parityResults" class="scroll"></div>
+</div>
+
+<div class="card">
+<h2>23. Backtrader Parity · Runtime/Schema Fix v2</h2>
+<p><b>只修22的执行适配，不碰策略。</b> 22 的 161/161 全失败，所以 PF 0.6845 无效。</p>
+<p class="muted">这版先拿真实 /data/daytrade/qc_1min_oos_cache 做 Runtime + Schema Preflight，并实际用前5笔交易启动 Backtrader。Preflight 有任何错误就立即停，不再浪费时间长跑；通过才重放全部161笔。</p>
+<p class="muted">改动仅限：明确1-share订单、真实1min PandasData schema、入场前一根bar提交stop-entry、订单状态日志。20/21的选股、Entry、Stop、Exit规则和参数全部冻结。</p>
+<button id="bt_parity_v2Btn" type="button">Run Backtrader Parity v2</button>
+<div class="row"><b>Parity v2 进度</b><span id="bt_parity_v2Pct">0%</span></div>
+<div class="track"><div id="bt_parity_v2Bar" class="bar"></div></div>
+<div id="bt_parity_v2Msg" class="msg">尚未开始</div>
+<div id="bt_parity_v2Results" class="scroll"></div>
 </div>
 
 <div class="card">
@@ -757,6 +771,30 @@ function renderBTParity(r){
  $("bt_parityResults").innerHTML=h;
 }
 
+
+function renderBTParityV2(r){
+ if(!r)return;
+ let h=`<p><b>${r.study}</b> · <b>${r.verdict}</b></p>`;
+ if(r.preflight){
+   h+=`<p><b>Preflight:</b> Backtrader ${r.preflight.backtrader_version} · cache files ${r.preflight.cache_files_total} · ambiguous ${r.preflight.ambiguous}</p>`;
+   h+='<table><thead><tr><th>Sample</th><th>Exists</th><th>Rows</th><th>Trial</th><th>Error</th></tr></thead><tbody>';
+   (r.preflight.sample_checks||[]).forEach(x=>h+=`<tr><td>${x.symbol} ${x.date}</td><td>${x.exists?"✅":"❌"}</td><td>${x.rows??0}</td><td>${x.trial_status??"—"}</td><td>${x.trial_error??""}</td></tr>`);
+   h+='</tbody></table>';
+ }
+ if(r.verdict==="PREFLIGHT_FAIL"){
+   h+=`<p><b>STOP：</b>${r.note}</p>`;
+   $("bt_parity_v2Results").innerHTML=h; return;
+ }
+ const lo=r.lower_bound_21||{}, b=r.backtrader_oos||{}, hi=r.upper_bound_21||{};
+ const pct=x=>(Number(x||0)*100).toFixed(1);
+ h+=`<p><b>Resolved:</b> ${r.resolved}/${r.ambiguous_trades} · <b>Errors:</b> ${r.errors} · <b>Inside 21 bounds:</b> ${(Number(r.inside_21_bounds_share||0)*100).toFixed(1)}%</p>`;
+ h+='<table><thead><tr><th>Result</th><th>Trades</th><th>Win%</th><th>PF</th><th>AvgR</th><th>MedianR</th></tr></thead><tbody>';
+ const row=(n,x)=>`<tr><td>${n}</td><td>${x.trades??0}</td><td>${pct(x.win_rate)}</td><td>${x.profit_factor??0}</td><td>${x.avg_r??0}</td><td>${x.median_r??0}</td></tr>`;
+ h+=row("21 Lower",lo)+row("Backtrader v2",b)+row("21 Upper",hi);
+ h+='</tbody></table><p><b>Decision:</b> '+(r.decision_rule||"")+'</p>';
+ $("bt_parity_v2Results").innerHTML=h;
+}
+
 async function poll(kind){
   try{
     const r=await fetch("/job/"+kind,{cache:"no-store"});
@@ -781,6 +819,7 @@ async function poll(kind){
     if(d.result && kind==="qc_bench") renderQCBench(d.result);
     if(d.result && kind==="qc_1m") renderQC1m(d.result);
     if(d.result && kind==="bt_parity") renderBTParity(d.result);
+    if(d.result && kind==="bt_parity_v2") renderBTParityV2(d.result);
     if(d.data_exists) $("dataState").textContent="✅ Data ready";
     if(d.running) setTimeout(()=>poll(kind),800);
   }catch(e){
@@ -848,7 +887,7 @@ $("autopsyBtn").addEventListener("click", async ()=>{
 $("tournamentBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-tournament",{method:"POST"})).json(); setProgress("tournament",d); poll("tournament"); });
 
 $("od_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-audit",{method:"POST"})).json(); setProgress("od_audit",d); poll("od_audit"); });
-$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); poll("orig_v01"); poll("parity_audit"); poll("orig_tz"); poll("qc_bench"); poll("qc_1m"); poll("bt_parity"); });
+$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); poll("orig_v01"); poll("parity_audit"); poll("orig_tz"); poll("qc_bench"); poll("qc_1m"); poll("bt_parity"); poll("bt_parity_v2"); });
 $("orb_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-orb-audit",{method:"POST"})).json(); setProgress("orb_audit",d); poll("orb_audit"); });
 $("fp_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-fp-audit",{method:"POST"})).json(); setProgress("fp_audit",d); poll("fp_audit"); });
 $("mc_trialBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-mc-trial",{method:"POST"})).json(); setProgress("mc_trial",d); poll("mc_trial"); });
@@ -858,6 +897,7 @@ $("orig_tzBtn").addEventListener("click", async ()=>{ const d=await (await fetch
 $("qc_benchBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-qc-bench",{method:"POST"})).json(); setProgress("qc_bench",d); poll("qc_bench"); });
 $("qc_1mBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-qc-1m",{method:"POST"})).json(); setProgress("qc_1m",d); poll("qc_1m"); });
 $("bt_parityBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-bt-parity",{method:"POST"})).json(); setProgress("bt_parity",d); poll("bt_parity"); });
+$("bt_parity_v2Btn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-bt-parity-v2",{method:"POST"})).json(); setProgress("bt_parity_v2",d); poll("bt_parity_v2"); });
 
 $("rescanBtn").addEventListener("click", async ()=>{
   try{
@@ -1891,6 +1931,29 @@ def start_bt_parity():
     time.sleep(.05)
     with LOCK:
         return jsonify(JOBS["bt_parity"])
+
+
+
+def bt_parity_v2_worker():
+    try:
+        def cb(pct,msg): set_job("bt_parity_v2",running=True,progress=int(pct),message=msg,ok=None)
+        set_job("bt_parity_v2",running=True,progress=1,message="真实1min cache Preflight：先测5笔，不通过不长跑…",ok=None,result=None)
+        result=run_backtrader_parity_v2(progress_cb=cb)
+        set_job("bt_parity_v2",running=False,progress=100,
+                message=f"✅ Backtrader v2：{result['verdict']} · resolved {result.get('resolved',0)}/{result.get('ambiguous_trades',161)} · PF {result.get('backtrader_oos',{}).get('profit_factor')}",
+                ok=(result["verdict"]=="PASS"),result=result)
+    except Exception as e:
+        set_job("bt_parity_v2",running=False,progress=100,message=f"❌ {type(e).__name__}: {e}",ok=False)
+
+@app.post("/start-bt-parity-v2")
+def start_bt_parity_v2():
+    with LOCK:
+        if JOBS["bt_parity_v2"]["running"]:
+            return jsonify(JOBS["bt_parity_v2"])
+    threading.Thread(target=bt_parity_v2_worker,daemon=True).start()
+    time.sleep(.05)
+    with LOCK:
+        return jsonify(JOBS["bt_parity_v2"])
 
 
 @app.post("/start-download")
