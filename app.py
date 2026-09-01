@@ -35,6 +35,7 @@ from alpaca_macd_source_parity_audit_v1 import run_alpaca_macd_source_parity
 from alpaca_momentum_source_locked_v2 import run_alpaca_momentum_source_locked_v2
 from external_challenger3_vwap_mean_reversion_v1 import run_external_challenger3
 from historical_depth_preflight_v1 import run_historical_depth_preflight, run_historical_depth_build
+from champion_benchmark_summary_v1 import run_champion_benchmark_summary
 try:
     from pairs_walkforward_v1 import run_pairs_walkforward
     PAIRS_V1_IMPORT_ERROR = None
@@ -116,6 +117,7 @@ JOBS = {
     "challenger3": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "hist_pre": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "hist_build": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
+    "bench_summary": {"running": False, "progress": 0, "message": "尚未刷新", "ok": None, "result": None},
     "pairs_wf": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "pairs_pre_v2": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "pairs_v2": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
@@ -157,6 +159,16 @@ th:first-child,td:first-child{text-align:left}
 <div class="wrap">
 <h1>🇺🇸 US DayTrade Radar <small>Original Engine Parity Audit v1</small></h1>
 
+<div class="card">
+<h2>37. Champion vs External Benchmarks Summary v1</h2>
+<p><b>把26与外部#1–#4放在同一页，先看证据，不再凭单次漂亮PF判断。</b></p>
+<p class="muted">26=真正未来 Frozen Paper Forward；#1 trading-orb；#2 Alpaca Momentum；#3 VWAP Mean Reversion；#4 18-fold Pairs Walk-Forward。只读汇总，不重跑、不调任何策略。</p>
+<button id="bench_summaryBtn">Refresh Benchmark Summary</button>
+<div class="row"><b>Summary</b><span id="bench_summaryPct">0%</span></div>
+<div class="track"><div id="bench_summaryBar" class="bar"></div></div>
+<div id="bench_summaryMsg" class="msg">尚未刷新</div>
+<div id="bench_summaryResults" class="scroll"></div>
+</div>
 <div class="card">
 <h2>36. Pairs Walk-Forward · Resumable Runtime v2</h2>
 <p><b>只修35的运行架构，不改任何交易/筛选参数。</b></p>
@@ -1209,6 +1221,26 @@ function renderPairsV2(r){
  h+=`<p><b>Decision:</b> ${r.decision_rule||""}</p>`; $("pairs_v2Results").innerHTML=h;
 }
 
+
+function renderBenchSummary(r){
+ if(!r)return;
+ const pct=x=>(Number(x||0)*100).toFixed(1);
+ const c=r.champion||{};
+ let h=`<p><b>${r.study}</b></p>`;
+ h+=`<p><b>26 Frozen Forward:</b> ${c.trades??0} trades · ${c.days??0} days · Win ${pct(c.win_rate)}% · PF ${c.profit_factor??0} · AvgR ${c.avg_edge??0} · MaxDD ${c.drawdown??0}R · Net ${c.net_r??0}R · <b>${c.status||""}</b></p>`;
+ h+='<table><thead><tr><th>Candidate</th><th>Family</th><th>Status</th><th>Sample</th><th>Trades</th><th>Win%</th><th>PF</th><th>Avg Edge</th><th>Bootstrap P(PF>1)</th><th>Stability</th></tr></thead><tbody>';
+ (r.challengers||[]).forEach(x=>{
+   h+=`<tr><td>${x.name}</td><td>${x.family||""}</td><td>${x.status}</td><td>${x.sample_type||""}</td><td>${x.trades??0}</td><td>${pct(x.win_rate)}</td><td>${x.profit_factor??0}</td><td>${x.avg_edge??0} ${x.avg_edge_label||""}</td><td>${x.bootstrap_pf_gt1==null?"—":pct(x.bootstrap_pf_gt1)+"%"}</td><td>${x.stability||""}</td></tr>`;
+ });
+ h+='</tbody></table>';
+ const s=r.summary||{};
+ h+=`<p><b>External score:</b> tested ${s.external_tested??0} · promoted ${s.external_promoted??0} · dropped ${s.external_dropped??0} · research-only ${s.external_research_only??0}</p>`;
+ h+='<h3>Interpretation</h3><ul>';
+ (r.interpretation||[]).forEach(x=>h+=`<li>${x}</li>`);
+ h+=`</ul><p><b>Next gate:</b> ${r.next_gate||""}</p>`;
+ $("bench_summaryResults").innerHTML=h;
+}
+
 async function poll(kind){
   try{
     const r=await fetch("/job/"+kind,{cache:"no-store"});
@@ -1246,6 +1278,7 @@ async function poll(kind){
     if(d.result && kind==="challenger3") renderChallenger3(d.result);
     if(d.result && kind==="hist_pre") renderHistPre(d.result);
     if(d.result && kind==="hist_build") renderHistBuild(d.result);
+    if(d.result && kind==="bench_summary") renderBenchSummary(d.result);
     if(d.result && kind==="pairs_wf") renderPairsWF(d.result);
     if(d.result && kind==="pairs_pre_v2") renderPairsPreV2(d.result);
     if(d.result && kind==="pairs_v2") renderPairsV2(d.result);
@@ -1316,7 +1349,7 @@ $("autopsyBtn").addEventListener("click", async ()=>{
 $("tournamentBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-tournament",{method:"POST"})).json(); setProgress("tournament",d); poll("tournament"); });
 
 $("od_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-audit",{method:"POST"})).json(); setProgress("od_audit",d); poll("od_audit"); });
-$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); poll("orig_v01"); poll("parity_audit"); poll("orig_tz"); poll("qc_bench"); poll("qc_1m"); poll("bt_parity"); poll("bt_parity_v2"); poll("trade_parity"); poll("entry_truth"); poll("paper_fwd"); poll("command_center"); poll("ext_challenger"); poll("alpaca_mom"); poll("alpaca_funnel"); poll("alpaca_macd_parity"); poll("alpaca_v2"); poll("challenger3"); poll("hist_pre"); poll("hist_build"); poll("pairs_wf"); poll("pairs_pre_v2"); poll("pairs_v2"); });
+$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); poll("orig_v01"); poll("parity_audit"); poll("orig_tz"); poll("qc_bench"); poll("qc_1m"); poll("bt_parity"); poll("bt_parity_v2"); poll("trade_parity"); poll("entry_truth"); poll("paper_fwd"); poll("command_center"); poll("ext_challenger"); poll("alpaca_mom"); poll("alpaca_funnel"); poll("alpaca_macd_parity"); poll("alpaca_v2"); poll("challenger3"); poll("hist_pre"); poll("hist_build"); poll("bench_summary"); poll("pairs_wf"); poll("pairs_pre_v2"); poll("pairs_v2"); });
 $("orb_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-orb-audit",{method:"POST"})).json(); setProgress("orb_audit",d); poll("orb_audit"); });
 $("fp_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-fp-audit",{method:"POST"})).json(); setProgress("fp_audit",d); poll("fp_audit"); });
 $("mc_trialBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-mc-trial",{method:"POST"})).json(); setProgress("mc_trial",d); poll("mc_trial"); });
@@ -1339,6 +1372,7 @@ $("alpaca_v2Btn").addEventListener("click", async ()=>{ const d=await (await fet
 $("challenger3Btn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-challenger3",{method:"POST"})).json(); setProgress("challenger3",d); poll("challenger3"); });
 $("hist_preBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-hist-pre",{method:"POST"})).json(); setProgress("hist_pre",d); poll("hist_pre"); });
 $("hist_buildBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-hist-build",{method:"POST"})).json(); setProgress("hist_build",d); poll("hist_build"); });
+$("bench_summaryBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-bench-summary",{method:"POST"})).json(); setProgress("bench_summary",d); poll("bench_summary"); });
 $("pairs_wfBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-pairs-wf",{method:"POST"})).json(); setProgress("pairs_wf",d); poll("pairs_wf"); });
 $("pairs_pre_v2Btn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-pairs-pre-v2",{method:"POST"})).json(); setProgress("pairs_pre_v2",d); poll("pairs_pre_v2"); });
 $("pairs_v2Btn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-pairs-v2",{method:"POST"})).json(); setProgress("pairs_v2",d); poll("pairs_v2"); });
@@ -2736,6 +2770,25 @@ def start_pairs_v2():
         if JOBS["pairs_v2"]["running"]: return jsonify(JOBS["pairs_v2"])
     threading.Thread(target=pairs_v2_worker,daemon=True).start(); time.sleep(.05)
     with LOCK:return jsonify(JOBS["pairs_v2"])
+
+
+
+def bench_summary_worker():
+    try:
+        set_job("bench_summary",running=True,progress=20,message="Reading 26 + external #1–#4 persisted results…",ok=None,result=None)
+        r=run_champion_benchmark_summary()
+        set_job("bench_summary",running=False,progress=100,
+                message=f"✅ Benchmark Summary · external tested {r['summary']['external_tested']} · promoted {r['summary']['external_promoted']}",
+                ok=True,result=r)
+    except Exception as e:
+        set_job("bench_summary",running=False,progress=100,message=f"❌ {type(e).__name__}: {e}",ok=False)
+
+@app.post("/start-bench-summary")
+def start_bench_summary():
+    with LOCK:
+        if JOBS["bench_summary"]["running"]: return jsonify(JOBS["bench_summary"])
+    threading.Thread(target=bench_summary_worker,daemon=True).start(); time.sleep(.05)
+    with LOCK:return jsonify(JOBS["bench_summary"])
 
 
 @app.post("/start-download")
