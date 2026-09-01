@@ -37,6 +37,7 @@ from external_challenger3_vwap_mean_reversion_v1 import run_external_challenger3
 from historical_depth_preflight_v1 import run_historical_depth_preflight, run_historical_depth_build
 from champion_benchmark_summary_v1 import run_champion_benchmark_summary
 from forward_daily_ops_v1 import run_forward_daily_ops
+from forward_date_resolver_audit_v1 import run_forward_date_resolver_audit
 try:
     from pairs_walkforward_v1 import run_pairs_walkforward
     PAIRS_V1_IMPORT_ERROR = None
@@ -120,6 +121,7 @@ JOBS = {
     "hist_build": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "bench_summary": {"running": False, "progress": 0, "message": "尚未刷新", "ok": None, "result": None},
     "daily_ops": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
+    "date_audit": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "pairs_wf": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "pairs_pre_v2": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "pairs_v2": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
@@ -161,6 +163,16 @@ th:first-child,td:first-child{text-align:left}
 <div class="wrap">
 <h1>🇺🇸 US DayTrade Radar <small>Original Engine Parity Audit v1</small></h1>
 
+<div class="card">
+<h2>39. Forward Date Resolver Audit v1</h2>
+<p><b>只查为什么38停在2026-08-31，不改26、不补单、不动ledger。</b></p>
+<p class="muted">一次读取：纽约当前时间、最近工作日、processed_dates、paper ledger日期、5min/1min cache实际日期。判断到底是“新交易日没下载”“state已误标processed”“cache已有但resolver漏掉”还是其他日期逻辑问题。</p>
+<button id="date_auditBtn">Run Forward Date Resolver Audit</button>
+<div class="row"><b>Date Audit</b><span id="date_auditPct">0%</span></div>
+<div class="track"><div id="date_auditBar" class="bar"></div></div>
+<div id="date_auditMsg" class="msg">尚未开始</div>
+<div id="date_auditResults" class="scroll"></div>
+</div>
 <div class="card">
 <h2>38. Forward Daily Ops & Gate Monitor v1</h2>
 <p><b>以后每天只用这个入口。</b> 不改26、不重跑旧交易、不重新跑外部#1–#4。</p>
@@ -1276,6 +1288,25 @@ function renderDailyOps(r){
  $("daily_opsResults").innerHTML=h;
 }
 
+
+function renderDateAudit(r){
+ if(!r)return;
+ const c=r.clock||{}, s=r.state||{}, l=r.ledger||{}, c5=r.cache_5m||{}, c1=r.cache_1m||{};
+ let h=`<p><b>${r.study}</b> · <b>${r.verdict}</b></p>`;
+ h+=`<p><b>NY now:</b> ${c.new_york_now||""}</p>`;
+ h+=`<p><b>Recent NY weekdays:</b> ${(c.recent_ny_weekdays||[]).join(", ")}</p>`;
+ h+='<table><thead><tr><th>Source</th><th>Latest date</th><th>Details</th></tr></thead><tbody>';
+ h+=`<tr><td>processed_dates</td><td>${s.latest_processed||"—"}</td><td>${(s.processed_dates||[]).slice(-10).join(", ")}</td></tr>`;
+ h+=`<tr><td>paper ledger</td><td>${l.latest_ledger_date||"—"}</td><td>${(l.dates||[]).slice(-10).join(", ")}</td></tr>`;
+ h+=`<tr><td>5m cache</td><td>${c5.latest_cache_date||"—"}</td><td>${(c5.dates_tail||[]).join(", ")}</td></tr>`;
+ h+=`<tr><td>1m cache</td><td>${c1.latest_cache_date||"—"}</td><td>${(c1.dates_tail||[]).join(", ")}</td></tr>`;
+ h+='</tbody></table>';
+ h+=`<p><b>Flags:</b> ${(r.diagnostic_flags||[]).join(" · ")}</p>`;
+ h+=`<p><b>Guardrail:</b> ${r.guardrail||""}</p>`;
+ h+=`<p><b>Next:</b> ${r.next_step||""}</p>`;
+ $("date_auditResults").innerHTML=h;
+}
+
 async function poll(kind){
   try{
     const r=await fetch("/job/"+kind,{cache:"no-store"});
@@ -1315,6 +1346,7 @@ async function poll(kind){
     if(d.result && kind==="hist_build") renderHistBuild(d.result);
     if(d.result && kind==="bench_summary") renderBenchSummary(d.result);
     if(d.result && kind==="daily_ops") renderDailyOps(d.result);
+    if(d.result && kind==="date_audit") renderDateAudit(d.result);
     if(d.result && kind==="pairs_wf") renderPairsWF(d.result);
     if(d.result && kind==="pairs_pre_v2") renderPairsPreV2(d.result);
     if(d.result && kind==="pairs_v2") renderPairsV2(d.result);
@@ -1385,7 +1417,7 @@ $("autopsyBtn").addEventListener("click", async ()=>{
 $("tournamentBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-tournament",{method:"POST"})).json(); setProgress("tournament",d); poll("tournament"); });
 
 $("od_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-audit",{method:"POST"})).json(); setProgress("od_audit",d); poll("od_audit"); });
-$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); poll("orig_v01"); poll("parity_audit"); poll("orig_tz"); poll("qc_bench"); poll("qc_1m"); poll("bt_parity"); poll("bt_parity_v2"); poll("trade_parity"); poll("entry_truth"); poll("paper_fwd"); poll("command_center"); poll("ext_challenger"); poll("alpaca_mom"); poll("alpaca_funnel"); poll("alpaca_macd_parity"); poll("alpaca_v2"); poll("challenger3"); poll("hist_pre"); poll("hist_build"); poll("bench_summary"); poll("daily_ops"); poll("pairs_wf"); poll("pairs_pre_v2"); poll("pairs_v2"); });
+$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); poll("orig_v01"); poll("parity_audit"); poll("orig_tz"); poll("qc_bench"); poll("qc_1m"); poll("bt_parity"); poll("bt_parity_v2"); poll("trade_parity"); poll("entry_truth"); poll("paper_fwd"); poll("command_center"); poll("ext_challenger"); poll("alpaca_mom"); poll("alpaca_funnel"); poll("alpaca_macd_parity"); poll("alpaca_v2"); poll("challenger3"); poll("hist_pre"); poll("hist_build"); poll("bench_summary"); poll("daily_ops"); poll("date_audit"); poll("pairs_wf"); poll("pairs_pre_v2"); poll("pairs_v2"); });
 $("orb_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-orb-audit",{method:"POST"})).json(); setProgress("orb_audit",d); poll("orb_audit"); });
 $("fp_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-fp-audit",{method:"POST"})).json(); setProgress("fp_audit",d); poll("fp_audit"); });
 $("mc_trialBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-mc-trial",{method:"POST"})).json(); setProgress("mc_trial",d); poll("mc_trial"); });
@@ -1410,6 +1442,7 @@ $("hist_preBtn").addEventListener("click", async ()=>{ const d=await (await fetc
 $("hist_buildBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-hist-build",{method:"POST"})).json(); setProgress("hist_build",d); poll("hist_build"); });
 $("bench_summaryBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-bench-summary",{method:"POST"})).json(); setProgress("bench_summary",d); poll("bench_summary"); });
 $("daily_opsBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-daily-ops",{method:"POST"})).json(); setProgress("daily_ops",d); poll("daily_ops"); });
+$("date_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-date-audit",{method:"POST"})).json(); setProgress("date_audit",d); poll("date_audit"); });
 $("pairs_wfBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-pairs-wf",{method:"POST"})).json(); setProgress("pairs_wf",d); poll("pairs_wf"); });
 $("pairs_pre_v2Btn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-pairs-pre-v2",{method:"POST"})).json(); setProgress("pairs_pre_v2",d); poll("pairs_pre_v2"); });
 $("pairs_v2Btn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-pairs-v2",{method:"POST"})).json(); setProgress("pairs_v2",d); poll("pairs_v2"); });
@@ -2847,6 +2880,26 @@ def start_daily_ops():
         if JOBS["daily_ops"]["running"]: return jsonify(JOBS["daily_ops"])
     threading.Thread(target=daily_ops_worker,daemon=True).start(); time.sleep(.05)
     with LOCK:return jsonify(JOBS["daily_ops"])
+
+
+
+def date_audit_worker():
+    try:
+        def cb(p,m): set_job("date_audit",running=True,progress=int(p),message=m,ok=None)
+        set_job("date_audit",running=True,progress=1,message="Read-only date resolver audit…",ok=None,result=None)
+        r=run_forward_date_resolver_audit(progress_cb=cb)
+        set_job("date_audit",running=False,progress=100,
+                message=f"✅ Date Audit · {r['verdict']}",
+                ok=True,result=r)
+    except Exception as e:
+        set_job("date_audit",running=False,progress=100,message=f"❌ {type(e).__name__}: {e}",ok=False)
+
+@app.post("/start-date-audit")
+def start_date_audit():
+    with LOCK:
+        if JOBS["date_audit"]["running"]: return jsonify(JOBS["date_audit"])
+    threading.Thread(target=date_audit_worker,daemon=True).start(); time.sleep(.05)
+    with LOCK:return jsonify(JOBS["date_audit"])
 
 
 @app.post("/start-download")
