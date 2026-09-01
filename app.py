@@ -26,6 +26,7 @@ from backtrader_execution_parity_v1 import run_backtrader_execution_parity
 from backtrader_execution_parity_v2 import run_backtrader_parity_v2
 from trade_level_parity_audit_v1 import run_trade_level_parity_audit
 from entry_fill_truth_audit_v1 import run_entry_fill_truth_audit
+from paper_forward_test_v1 import run_paper_forward_update
 
 app = Flask(__name__)
 
@@ -82,6 +83,7 @@ JOBS = {
     "bt_parity_v2": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "trade_parity": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "entry_truth": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
+    "paper_fwd": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
 }
 
 HTML = """
@@ -404,6 +406,18 @@ th:first-child,td:first-child{text-align:left}
 <div class="track"><div id="entry_truthBar" class="bar"></div></div>
 <div id="entry_truthMsg" class="msg">尚未开始</div>
 <div id="entry_truthResults" class="scroll"></div>
+</div>
+
+<div class="card">
+<h2>26. Frozen Paper Forward Test v1</h2>
+<p><b>正式停止回看历史调参。</b> 从 2026-08-31 起，只追加后来真正完成的美股交易日。</p>
+<p class="muted">策略完全冻结为已通过 20→25 验证的 QuantConnect/Zarattini Stocks-in-Play ORB：5min OR、Price&gt;$5、ATR14&gt;$0.50、RVOL&gt;1、Top20、0.1×ATR stop、EOD exit。执行按已验证的1-minute stop-order语义。</p>
+<p class="muted">每次只下载尚未处理的新交易日并写入 /data/daytrade/paper_forward_qc_v1。已处理日期永久复用，不重新下载、不覆盖历史、不允许调参数。</p>
+<button id="paper_fwdBtn" type="button">Update Frozen Paper Forward</button>
+<div class="row"><b>Forward 进度</b><span id="paper_fwdPct">0%</span></div>
+<div class="track"><div id="paper_fwdBar" class="bar"></div></div>
+<div id="paper_fwdMsg" class="msg">尚未开始</div>
+<div id="paper_fwdResults" class="scroll"></div>
 </div>
 
 <div class="card">
@@ -858,6 +872,20 @@ function renderEntryTruth(r){
  $("entry_truthResults").innerHTML=h;
 }
 
+
+function renderPaperFwd(r){
+ if(!r)return;
+ const s=r.summary||{};
+ const pct=x=>(Number(x||0)*100).toFixed(1);
+ let h=`<p><b>${r.study}</b> · <b>${r.mode||r.verdict||""}</b></p>`;
+ h+=`<p><b>Forward start:</b> ${r.forward_start_date||"2026-08-31"} · <b>Processed dates:</b> ${(r.processed_dates||[]).join(", ")||"none"}</p>`;
+ h+=`<p><b>New dates:</b> ${(r.new_dates_processed||[]).join(", ")||"0"} · <b>New trades:</b> ${r.new_trades??0} · <b>Ledger:</b> ${r.ledger_rows??0}</p>`;
+ h+='<table><thead><tr><th>Trades</th><th>Win%</th><th>PF</th><th>AvgR</th><th>MedianR</th><th>MaxDD(R)</th></tr></thead><tbody>';
+ h+=`<tr><td>${s.trades??0}</td><td>${pct(s.win_rate)}</td><td>${s.profit_factor??0}</td><td>${s.avg_r??0}</td><td>${s.median_r??0}</td><td>${s.max_dd_r??0}</td></tr></tbody></table>`;
+ h+=`<p><b>Guardrail:</b> ${r.guardrail||""}</p><p><b>Paper gate:</b> ${r.paper_gate||r.next_step||""}</p>`;
+ $("paper_fwdResults").innerHTML=h;
+}
+
 async function poll(kind){
   try{
     const r=await fetch("/job/"+kind,{cache:"no-store"});
@@ -885,6 +913,7 @@ async function poll(kind){
     if(d.result && kind==="bt_parity_v2") renderBTParityV2(d.result);
     if(d.result && kind==="trade_parity") renderTradeParity(d.result);
     if(d.result && kind==="entry_truth") renderEntryTruth(d.result);
+    if(d.result && kind==="paper_fwd") renderPaperFwd(d.result);
     if(d.data_exists) $("dataState").textContent="✅ Data ready";
     if(d.running) setTimeout(()=>poll(kind),800);
   }catch(e){
@@ -952,7 +981,7 @@ $("autopsyBtn").addEventListener("click", async ()=>{
 $("tournamentBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-tournament",{method:"POST"})).json(); setProgress("tournament",d); poll("tournament"); });
 
 $("od_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-audit",{method:"POST"})).json(); setProgress("od_audit",d); poll("od_audit"); });
-$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); poll("orig_v01"); poll("parity_audit"); poll("orig_tz"); poll("qc_bench"); poll("qc_1m"); poll("bt_parity"); poll("bt_parity_v2"); poll("trade_parity"); poll("entry_truth"); });
+$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); poll("orig_v01"); poll("parity_audit"); poll("orig_tz"); poll("qc_bench"); poll("qc_1m"); poll("bt_parity"); poll("bt_parity_v2"); poll("trade_parity"); poll("entry_truth"); poll("paper_fwd"); });
 $("orb_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-orb-audit",{method:"POST"})).json(); setProgress("orb_audit",d); poll("orb_audit"); });
 $("fp_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-fp-audit",{method:"POST"})).json(); setProgress("fp_audit",d); poll("fp_audit"); });
 $("mc_trialBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-mc-trial",{method:"POST"})).json(); setProgress("mc_trial",d); poll("mc_trial"); });
@@ -965,6 +994,7 @@ $("bt_parityBtn").addEventListener("click", async ()=>{ const d=await (await fet
 $("bt_parity_v2Btn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-bt-parity-v2",{method:"POST"})).json(); setProgress("bt_parity_v2",d); poll("bt_parity_v2"); });
 $("trade_parityBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-trade-parity",{method:"POST"})).json(); setProgress("trade_parity",d); poll("trade_parity"); });
 $("entry_truthBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-entry-truth",{method:"POST"})).json(); setProgress("entry_truth",d); poll("entry_truth"); });
+$("paper_fwdBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-paper-fwd",{method:"POST"})).json(); setProgress("paper_fwd",d); poll("paper_fwd"); });
 
 $("rescanBtn").addEventListener("click", async ()=>{
   try{
@@ -2067,6 +2097,29 @@ def start_entry_truth():
     time.sleep(.05)
     with LOCK:
         return jsonify(JOBS["entry_truth"])
+
+
+
+def paper_fwd_worker():
+    try:
+        def cb(pct,msg): set_job("paper_fwd",running=True,progress=int(pct),message=msg,ok=None)
+        set_job("paper_fwd",running=True,progress=1,message="Frozen forward only：检查尚未处理的已完成交易日…",ok=None,result=None)
+        result=run_paper_forward_update(progress_cb=cb)
+        set_job("paper_fwd",running=False,progress=100,
+                message=f"✅ Paper Forward：{result.get('verdict',result.get('mode','UPDATED'))} · ledger {result.get('ledger_rows',0)} trades",
+                ok=True,result=result)
+    except Exception as e:
+        set_job("paper_fwd",running=False,progress=100,message=f"❌ {type(e).__name__}: {e}",ok=False)
+
+@app.post("/start-paper-fwd")
+def start_paper_fwd():
+    with LOCK:
+        if JOBS["paper_fwd"]["running"]:
+            return jsonify(JOBS["paper_fwd"])
+    threading.Thread(target=paper_fwd_worker,daemon=True).start()
+    time.sleep(.05)
+    with LOCK:
+        return jsonify(JOBS["paper_fwd"])
 
 
 @app.post("/start-download")
