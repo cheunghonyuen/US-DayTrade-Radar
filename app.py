@@ -11,6 +11,7 @@ from entry_quality_v06 import run_entry_quality_validation
 from robustness_v07 import run_robustness_v07
 from true_oos_v08 import run_true_oos_v08
 from oos_failure_v09 import run_oos_failure_autopsy
+from setup_tournament_v1 import run_setup_tournament
 
 app = Flask(__name__)
 
@@ -52,6 +53,7 @@ JOBS = {
     "oosdl": {"running": False, "progress": 0, "message": "尚未开始", "ok": None},
     "oos": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "autopsy": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
+    "tournament": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
 }
 
 HTML = """
@@ -59,7 +61,7 @@ HTML = """
 <html lang="zh">
 <head>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>US DayTrade Radar v0.9</title>
+<title>US DayTrade Setup Tournament v1</title>
 <style>
 body{font-family:-apple-system,BlinkMacSystemFont,Arial,sans-serif;background:#f4f6f8;margin:0;padding:16px;color:#111}
 .wrap{max-width:900px;margin:auto}
@@ -88,7 +90,7 @@ th:first-child,td:first-child{text-align:left}
 </head>
 <body>
 <div class="wrap">
-<h1>🇺🇸 US DayTrade Radar <small>v0.9</small></h1>
+<h1>🇺🇸 US DayTrade Radar <small>Setup Tournament v1</small></h1>
 
 <div class="card">
 <h2>1. Preflight</h2>
@@ -198,6 +200,17 @@ th:first-child,td:first-child{text-align:left}
 <div class="track"><div id="autopsyBar" class="bar"></div></div>
 <div id="autopsyMsg" class="msg">尚未开始</div>
 <div id="autopsyResults" class="scroll"></div>
+</div>
+
+<div class="card">
+<h2>11. Setup Tournament v1</h2>
+<p><b>停止救 ORB。</b> 直接比较 4 个逻辑不同的美股日内 Setup。</p>
+<p class="muted">复用现有 Discovery + True OOS 两年 Persistent Replay，不重新下载：ORB Breakout / Opening Drive / VWAP Reclaim / First Pullback。True OOS 优先，不按单一最高 PF 选冠军。</p>
+<button id="tournamentBtn" type="button">Run Setup Tournament v1</button>
+<div class="row"><b>Tournament 进度</b><span id="tournamentPct">0%</span></div>
+<div class="track"><div id="tournamentBar" class="bar"></div></div>
+<div id="tournamentMsg" class="msg">尚未开始</div>
+<div id="tournamentResults" class="scroll"></div>
 </div>
 
 <div class="card">
@@ -391,6 +404,16 @@ function renderAutopsy(r){
   $("autopsyResults").innerHTML=h;
 }
 
+
+function renderTournament(r){
+  if(!r)return;
+  let h=`<p><b>${r.study}</b></p><p>${r.ranking_rule}</p>`;
+  h+='<table><thead><tr><th>Setup</th><th>D Trades</th><th>D PF</th><th>D AvgR</th><th>OOS Trades</th><th>OOS PF</th><th>OOS AvgR</th><th>OOS Win%</th><th>Score</th><th>Verdict</th></tr></thead><tbody>';
+  (r.results||[]).forEach(x=>{const d=x.discovery||{},o=x.oos||{};h+=`<tr><td><b>${x.setup}</b></td><td>${d.trades}</td><td>${d.profit_factor}</td><td>${d.avg_r}</td><td>${o.trades}</td><td>${o.profit_factor}</td><td>${o.avg_r}</td><td>${(Number(o.win_rate||0)*100).toFixed(1)}</td><td>${x.score}</td><td><b>${x.verdict}</b></td></tr>`;});
+  h+='</tbody></table>';
+  if(r.winner)h+=`<p><b>Current Leader:</b> ${r.winner.setup} · ${r.winner.verdict}</p>`;
+  $("tournamentResults").innerHTML=h;
+}
 async function poll(kind){
   try{
     const r=await fetch("/job/"+kind,{cache:"no-store"});
@@ -403,6 +426,7 @@ async function poll(kind){
     if(d.result && kind==="robust") renderRobust(d.result);
     if(d.result && kind==="oos") renderOOS(d.result);
     if(d.result && kind==="autopsy") renderAutopsy(d.result);
+    if(d.result && kind==="tournament") renderTournament(d.result);
     if(d.data_exists) $("dataState").textContent="✅ Data ready";
     if(d.running) setTimeout(()=>poll(kind),800);
   }catch(e){
@@ -467,6 +491,8 @@ $("autopsyBtn").addEventListener("click", async ()=>{
   setProgress("autopsy",d); poll("autopsy");
 });
 
+$("tournamentBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-tournament",{method:"POST"})).json(); setProgress("tournament",d); poll("tournament"); });
+
 $("rescanBtn").addEventListener("click", async ()=>{
   try{
     const d=await (await fetch("/rescan-data",{method:"POST"})).json();
@@ -477,7 +503,7 @@ $("rescanBtn").addEventListener("click", async ()=>{
   }
 });
 
-poll("download"); poll("backtest"); poll("matrix"); poll("ladder"); poll("dna"); poll("entryq"); poll("robust"); poll("oosdl"); poll("oos"); poll("autopsy");
+poll("download"); poll("backtest"); poll("matrix"); poll("ladder"); poll("dna"); poll("entryq"); poll("robust"); poll("oosdl"); poll("oos"); poll("autopsy"); poll("tournament");
 </script>
 </body>
 </html>
@@ -636,7 +662,7 @@ def index():
 @app.post("/preflight")
 def preflight():
     checks=[]; ok=True
-    for f in ["engine.py","run_backtest.py","prepare_tiingo_data.py","prepare_sip_data.py","filter_ladder.py","winner_loser_diag.py","entry_quality_v06.py","robustness_v07.py","true_oos_v08.py","oos_failure_v09.py","config.json"]:
+    for f in ["engine.py","run_backtest.py","prepare_tiingo_data.py","prepare_sip_data.py","filter_ladder.py","winner_loser_diag.py","entry_quality_v06.py","robustness_v07.py","true_oos_v08.py","oos_failure_v09.py","setup_tournament_v1.py","config.json"]:
         exists=(BASE/f).exists()
         checks.append(f"{'OK' if exists else 'FAIL'} file {f}")
         ok = ok and exists
@@ -1084,6 +1110,28 @@ def start_autopsy():
     with LOCK:
         return jsonify(JOBS["autopsy"])
 
+
+
+def tournament_worker():
+    if not SIP_DATA.exists() or not OOS_DATA.exists():
+        set_job("tournament",running=False,progress=100,message="❌ 缺少现有两年 Persistent Replay。先 Run Preflight；不要重新下载。",ok=False)
+        return
+    try:
+        def cb(pct,msg): set_job("tournament",running=True,progress=int(pct),message=msg,ok=None)
+        set_job("tournament",running=True,progress=1,message="读取两年 Persistent Replay…",ok=None,result=None)
+        result=run_setup_tournament(str(SIP_DATA),str(OOS_DATA),str(BASE/"config.json"),str(OUT/"setup_tournament_v1"),progress_cb=cb)
+        w=result.get("winner"); msg="✅ Setup Tournament v1 完成"+(f"：Leader = {w['setup']} / {w['verdict']}" if w else "")
+        set_job("tournament",running=False,progress=100,message=msg,ok=True,result=result)
+    except Exception as e:
+        set_job("tournament",running=False,progress=100,message=f"❌ {type(e).__name__}: {e}",ok=False)
+
+@app.post("/start-tournament")
+def start_tournament():
+    with LOCK:
+        if JOBS["tournament"]["running"]: return jsonify(JOBS["tournament"])
+    threading.Thread(target=tournament_worker,daemon=True).start()
+    time.sleep(.05)
+    with LOCK:return jsonify(JOBS["tournament"])
 
 @app.post("/start-download")
 def start_download():
