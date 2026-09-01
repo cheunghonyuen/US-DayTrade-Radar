@@ -33,6 +33,7 @@ from external_challenger_alpaca_momentum_v1 import run_alpaca_momentum_challenge
 from alpaca_filter_funnel_audit_v1 import run_alpaca_filter_funnel_audit
 from alpaca_macd_source_parity_audit_v1 import run_alpaca_macd_source_parity
 from alpaca_momentum_source_locked_v2 import run_alpaca_momentum_source_locked_v2
+from external_challenger3_vwap_mean_reversion_v1 import run_external_challenger3
 
 app = Flask(__name__)
 
@@ -96,6 +97,7 @@ JOBS = {
     "alpaca_funnel": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "alpaca_macd_parity": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "alpaca_v2": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
+    "challenger3": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
 }
 
 HTML = """
@@ -134,6 +136,17 @@ th:first-child,td:first-child{text-align:left}
 <div class="wrap">
 <h1>🇺🇸 US DayTrade Radar <small>Original Engine Parity Audit v1</small></h1>
 
+<div class="card">
+<h2>33. External Challenger #3 · VWAP Mean Reversion v1</h2>
+<p><b>换第三种 edge family：VWAP Mean Reversion。</b> 26 Frozen Champion 完全不动。</p>
+<p class="muted">来源 555aaditya/Stock-Backtesting-Pipeline 的公开默认规则：Session VWAP；上下界 = VWAP ± 1.5×session close StdDev；Volume &gt; prior session-average bar volume ×1.2；Close跌破下界做Long，突破上界做Short；价格回到VWAP退出。</p>
+<p class="muted">源文档没有硬Stop，所以不擅自发明Stop。统一加入 $0.01/share slippage + $0.005/share commission，信号后一根5min bar执行，避免look-ahead。相同125股票 Discovery + True OOS，不扫参数。</p>
+<button id="challenger3Btn" type="button">Run External Challenger #3</button>
+<div class="row"><b>Challenger #3 进度</b><span id="challenger3Pct">0%</span></div>
+<div class="track"><div id="challenger3Bar" class="bar"></div></div>
+<div id="challenger3Msg" class="msg">尚未开始</div>
+<div id="challenger3Results" class="scroll"></div>
+</div>
 <div class="card">
 <h2>32. Alpaca Momentum · Source-Locked Replay v2</h2>
 <p><b>只修31确认的 MACD session-reset bug，其余原版规则全部冻结。</b></p>
@@ -1075,6 +1088,20 @@ function renderAlpacaV2(r){
  $("alpaca_v2Results").innerHTML=h;
 }
 
+
+function renderChallenger3(r){
+ if(!r)return;
+ const d=(r.discovery||{}).metrics||{}, o=(r.true_oos||{}).metrics||{}, b=(r.true_oos||{}).bootstrap||{};
+ const pct=x=>(Number(x||0)*100).toFixed(1);
+ let h=`<p><b>${r.study}</b></p><p>${r.source_fidelity_note||""}</p>`;
+ h+='<table><thead><tr><th>Period</th><th>Trades</th><th>Win%</th><th>PF</th><th>AvgTrade%</th><th>Median%</th><th>MaxDD%</th><th>Net PnL</th><th>L/S</th></tr></thead><tbody>';
+ h+=`<tr><td>Discovery</td><td>${d.trades??0}</td><td>${pct(d.win_rate)}</td><td>${d.profit_factor??0}</td><td>${d.avg_trade_pct??0}</td><td>${d.median_trade_pct??0}</td><td>${d.max_dd_pct??0}</td><td>${d.net_pnl??0}</td><td>${d.long_trades??0}/${d.short_trades??0}</td></tr>`;
+ h+=`<tr><td>True OOS</td><td>${o.trades??0}</td><td>${pct(o.win_rate)}</td><td>${o.profit_factor??0}</td><td>${o.avg_trade_pct??0}</td><td>${o.median_trade_pct??0}</td><td>${o.max_dd_pct??0}</td><td>${o.net_pnl??0}</td><td>${o.long_trades??0}/${o.short_trades??0}</td></tr></tbody></table>`;
+ h+=`<p><b>OOS bootstrap:</b> P(PF&gt;1) ${pct(b.prob_pf_gt1)} · PF95% [${(b.pf_ci95||[]).join(", ")}] · P(mean trade&gt;0) ${pct(b.prob_mean_return_gt0)}</p>`;
+ h+=`<p><b>Decision:</b> ${r.decision_rule||""}</p>`;
+ $("challenger3Results").innerHTML=h;
+}
+
 async function poll(kind){
   try{
     const r=await fetch("/job/"+kind,{cache:"no-store"});
@@ -1109,6 +1136,7 @@ async function poll(kind){
     if(d.result && kind==="alpaca_funnel") renderAlpacaFunnel(d.result);
     if(d.result && kind==="alpaca_macd_parity") renderAlpacaMacdParity(d.result);
     if(d.result && kind==="alpaca_v2") renderAlpacaV2(d.result);
+    if(d.result && kind==="challenger3") renderChallenger3(d.result);
     if(d.data_exists) $("dataState").textContent="✅ Data ready";
     if(d.running) setTimeout(()=>poll(kind),800);
   }catch(e){
@@ -1176,7 +1204,7 @@ $("autopsyBtn").addEventListener("click", async ()=>{
 $("tournamentBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-tournament",{method:"POST"})).json(); setProgress("tournament",d); poll("tournament"); });
 
 $("od_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-audit",{method:"POST"})).json(); setProgress("od_audit",d); poll("od_audit"); });
-$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); poll("orig_v01"); poll("parity_audit"); poll("orig_tz"); poll("qc_bench"); poll("qc_1m"); poll("bt_parity"); poll("bt_parity_v2"); poll("trade_parity"); poll("entry_truth"); poll("paper_fwd"); poll("command_center"); poll("ext_challenger"); poll("alpaca_mom"); poll("alpaca_funnel"); poll("alpaca_macd_parity"); poll("alpaca_v2"); });
+$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); poll("orig_v01"); poll("parity_audit"); poll("orig_tz"); poll("qc_bench"); poll("qc_1m"); poll("bt_parity"); poll("bt_parity_v2"); poll("trade_parity"); poll("entry_truth"); poll("paper_fwd"); poll("command_center"); poll("ext_challenger"); poll("alpaca_mom"); poll("alpaca_funnel"); poll("alpaca_macd_parity"); poll("alpaca_v2"); poll("challenger3"); });
 $("orb_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-orb-audit",{method:"POST"})).json(); setProgress("orb_audit",d); poll("orb_audit"); });
 $("fp_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-fp-audit",{method:"POST"})).json(); setProgress("fp_audit",d); poll("fp_audit"); });
 $("mc_trialBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-mc-trial",{method:"POST"})).json(); setProgress("mc_trial",d); poll("mc_trial"); });
@@ -1196,6 +1224,7 @@ $("alpaca_momBtn").addEventListener("click", async ()=>{ const d=await (await fe
 $("alpaca_funnelBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-alpaca-funnel",{method:"POST"})).json(); setProgress("alpaca_funnel",d); poll("alpaca_funnel"); });
 $("alpaca_macd_parityBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-alpaca-macd-parity",{method:"POST"})).json(); setProgress("alpaca_macd_parity",d); poll("alpaca_macd_parity"); });
 $("alpaca_v2Btn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-alpaca-v2",{method:"POST"})).json(); setProgress("alpaca_v2",d); poll("alpaca_v2"); });
+$("challenger3Btn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-challenger3",{method:"POST"})).json(); setProgress("challenger3",d); poll("challenger3"); });
 
 $("rescanBtn").addEventListener("click", async ()=>{
   try{
@@ -2464,6 +2493,31 @@ def start_alpaca_v2():
     time.sleep(.05)
     with LOCK:
         return jsonify(JOBS["alpaca_v2"])
+
+
+
+def challenger3_worker():
+    try:
+        def cb(pct,msg): set_job("challenger3",running=True,progress=int(pct),message=msg,ok=None)
+        set_job("challenger3",running=True,progress=1,message="VWAP Mean Reversion · manifest/schema preflight；不扫参数…",ok=None,result=None)
+        result=run_external_challenger3(progress_cb=cb)
+        m=result["true_oos"]["metrics"]; b=result["true_oos"]["bootstrap"]
+        passed=(m["trades"]>=100 and m["profit_factor"]>1 and m["avg_trade_pct"]>0 and b.get("prob_pf_gt1",0)>=0.80 and min(m.get("long_trades",0),m.get("short_trades",0))>=10)
+        set_job("challenger3",running=False,progress=100,
+                message=f"✅ Challenger #3 · OOS {m['trades']} trades · PF {m['profit_factor']} · {'PROMOTE' if passed else 'DROP'}",
+                ok=True,result=result)
+    except Exception as e:
+        set_job("challenger3",running=False,progress=100,message=f"❌ {type(e).__name__}: {e}",ok=False)
+
+@app.post("/start-challenger3")
+def start_challenger3():
+    with LOCK:
+        if JOBS["challenger3"]["running"]:
+            return jsonify(JOBS["challenger3"])
+    threading.Thread(target=challenger3_worker,daemon=True).start()
+    time.sleep(.05)
+    with LOCK:
+        return jsonify(JOBS["challenger3"])
 
 
 @app.post("/start-download")
