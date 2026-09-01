@@ -32,6 +32,7 @@ from external_challenger_sam_bateman_v1 import run_external_challenger
 from external_challenger_alpaca_momentum_v1 import run_alpaca_momentum_challenger
 from alpaca_filter_funnel_audit_v1 import run_alpaca_filter_funnel_audit
 from alpaca_macd_source_parity_audit_v1 import run_alpaca_macd_source_parity
+from alpaca_momentum_source_locked_v2 import run_alpaca_momentum_source_locked_v2
 
 app = Flask(__name__)
 
@@ -94,6 +95,7 @@ JOBS = {
     "alpaca_mom": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "alpaca_funnel": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "alpaca_macd_parity": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
+    "alpaca_v2": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
 }
 
 HTML = """
@@ -132,6 +134,17 @@ th:first-child,td:first-child{text-align:left}
 <div class="wrap">
 <h1>🇺🇸 US DayTrade Radar <small>Original Engine Parity Audit v1</small></h1>
 
+<div class="card">
+<h2>32. Alpaca Momentum · Source-Locked Replay v2</h2>
+<p><b>只修31确认的 MACD session-reset bug，其余原版规则全部冻结。</b></p>
+<p class="muted">MACD(12,26) / MACD(40,60) / MACD(13,21) 改为跨交易日 continuous warm-up；价格、Dollar Volume、涨幅、15min breakout、Volume、Stop、3R Target、Exit、手续费与滑点全部不改。</p>
+<p class="muted"><b>限制透明：</b>原 Alpaca 预载1000根1-minute bars；我们历史主Replay仍是5-minute。所以32回答的是“修正已确认实现Bug后，这套原规则在我们的125股票 Discovery + True OOS 是否有edge”，不是100%精确1-minute parity。</p>
+<button id="alpaca_v2Btn" type="button">Run Source-Locked Replay v2</button>
+<div class="row"><b>Replay v2 进度</b><span id="alpaca_v2Pct">0%</span></div>
+<div class="track"><div id="alpaca_v2Bar" class="bar"></div></div>
+<div id="alpaca_v2Msg" class="msg">尚未开始</div>
+<div id="alpaca_v2Results" class="scroll"></div>
+</div>
 <div class="card">
 <h2>31. Alpaca Momentum · MACD Source-Parity Audit v1</h2>
 <p><b>只查30的 174/192 → MACD 0 是否由实现错误造成，不改策略参数。</b></p>
@@ -1048,6 +1061,20 @@ function renderAlpacaMacdParity(r){
  $("alpaca_macd_parityResults").innerHTML=h;
 }
 
+
+function renderAlpacaV2(r){
+ if(!r)return;
+ const d=(r.discovery||{}).metrics||{}, o=(r.true_oos||{}).metrics||{}, b=(r.true_oos||{}).bootstrap||{};
+ const pct=x=>(Number(x||0)*100).toFixed(1);
+ let h=`<p><b>${r.study}</b></p><p>${r.source_fidelity_note||""}</p>`;
+ h+='<table><thead><tr><th>Period</th><th>Trades</th><th>Win%</th><th>PF</th><th>AvgR</th><th>MedianR</th><th>MaxDD(R)</th><th>Net PnL</th></tr></thead><tbody>';
+ h+=`<tr><td>Discovery</td><td>${d.trades??0}</td><td>${pct(d.win_rate)}</td><td>${d.profit_factor??0}</td><td>${d.avg_r??0}</td><td>${d.median_r??0}</td><td>${d.max_dd_r??0}</td><td>${d.net_pnl??0}</td></tr>`;
+ h+=`<tr><td>True OOS</td><td>${o.trades??0}</td><td>${pct(o.win_rate)}</td><td>${o.profit_factor??0}</td><td>${o.avg_r??0}</td><td>${o.median_r??0}</td><td>${o.max_dd_r??0}</td><td>${o.net_pnl??0}</td></tr></tbody></table>`;
+ h+=`<p><b>OOS bootstrap:</b> P(PF&gt;1) ${pct(b.prob_pf_gt1)} · PF95% [${(b.pf_ci95||[]).join(", ")}] · P(AvgR&gt;0) ${pct(b.prob_avg_r_gt0)}</p>`;
+ h+=`<p><b>Decision:</b> ${r.decision_rule||""}</p>`;
+ $("alpaca_v2Results").innerHTML=h;
+}
+
 async function poll(kind){
   try{
     const r=await fetch("/job/"+kind,{cache:"no-store"});
@@ -1081,6 +1108,7 @@ async function poll(kind){
     if(d.result && kind==="alpaca_mom") renderAlpacaMom(d.result);
     if(d.result && kind==="alpaca_funnel") renderAlpacaFunnel(d.result);
     if(d.result && kind==="alpaca_macd_parity") renderAlpacaMacdParity(d.result);
+    if(d.result && kind==="alpaca_v2") renderAlpacaV2(d.result);
     if(d.data_exists) $("dataState").textContent="✅ Data ready";
     if(d.running) setTimeout(()=>poll(kind),800);
   }catch(e){
@@ -1148,7 +1176,7 @@ $("autopsyBtn").addEventListener("click", async ()=>{
 $("tournamentBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-tournament",{method:"POST"})).json(); setProgress("tournament",d); poll("tournament"); });
 
 $("od_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-audit",{method:"POST"})).json(); setProgress("od_audit",d); poll("od_audit"); });
-$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); poll("orig_v01"); poll("parity_audit"); poll("orig_tz"); poll("qc_bench"); poll("qc_1m"); poll("bt_parity"); poll("bt_parity_v2"); poll("trade_parity"); poll("entry_truth"); poll("paper_fwd"); poll("command_center"); poll("ext_challenger"); poll("alpaca_mom"); poll("alpaca_funnel"); poll("alpaca_macd_parity"); });
+$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); poll("orig_v01"); poll("parity_audit"); poll("orig_tz"); poll("qc_bench"); poll("qc_1m"); poll("bt_parity"); poll("bt_parity_v2"); poll("trade_parity"); poll("entry_truth"); poll("paper_fwd"); poll("command_center"); poll("ext_challenger"); poll("alpaca_mom"); poll("alpaca_funnel"); poll("alpaca_macd_parity"); poll("alpaca_v2"); });
 $("orb_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-orb-audit",{method:"POST"})).json(); setProgress("orb_audit",d); poll("orb_audit"); });
 $("fp_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-fp-audit",{method:"POST"})).json(); setProgress("fp_audit",d); poll("fp_audit"); });
 $("mc_trialBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-mc-trial",{method:"POST"})).json(); setProgress("mc_trial",d); poll("mc_trial"); });
@@ -1167,6 +1195,7 @@ $("ext_challengerBtn").addEventListener("click", async ()=>{ const d=await (awai
 $("alpaca_momBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-alpaca-mom",{method:"POST"})).json(); setProgress("alpaca_mom",d); poll("alpaca_mom"); });
 $("alpaca_funnelBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-alpaca-funnel",{method:"POST"})).json(); setProgress("alpaca_funnel",d); poll("alpaca_funnel"); });
 $("alpaca_macd_parityBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-alpaca-macd-parity",{method:"POST"})).json(); setProgress("alpaca_macd_parity",d); poll("alpaca_macd_parity"); });
+$("alpaca_v2Btn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-alpaca-v2",{method:"POST"})).json(); setProgress("alpaca_v2",d); poll("alpaca_v2"); });
 
 $("rescanBtn").addEventListener("click", async ()=>{
   try{
@@ -2410,6 +2439,31 @@ def start_alpaca_macd_parity():
     time.sleep(.05)
     with LOCK:
         return jsonify(JOBS["alpaca_macd_parity"])
+
+
+
+def alpaca_v2_worker():
+    try:
+        def cb(pct,msg): set_job("alpaca_v2",running=True,progress=int(pct),message=msg,ok=None)
+        set_job("alpaca_v2",running=True,progress=1,message="Source-locked v2：只修MACD跨session warm-up；其余参数冻结…",ok=None,result=None)
+        result=run_alpaca_momentum_source_locked_v2(progress_cb=cb)
+        m=result["true_oos"]["metrics"]; b=result["true_oos"]["bootstrap"]
+        passed=(m["trades"]>=100 and m["profit_factor"]>1 and m["avg_r"]>0 and b.get("prob_pf_gt1",0)>=0.80)
+        set_job("alpaca_v2",running=False,progress=100,
+                message=f"✅ Alpaca v2 · OOS {m['trades']} trades · PF {m['profit_factor']} · {'PROMOTE' if passed else 'DROP'}",
+                ok=True,result=result)
+    except Exception as e:
+        set_job("alpaca_v2",running=False,progress=100,message=f"❌ {type(e).__name__}: {e}",ok=False)
+
+@app.post("/start-alpaca-v2")
+def start_alpaca_v2():
+    with LOCK:
+        if JOBS["alpaca_v2"]["running"]:
+            return jsonify(JOBS["alpaca_v2"])
+    threading.Thread(target=alpaca_v2_worker,daemon=True).start()
+    time.sleep(.05)
+    with LOCK:
+        return jsonify(JOBS["alpaca_v2"])
 
 
 @app.post("/start-download")
