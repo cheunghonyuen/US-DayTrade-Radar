@@ -31,6 +31,7 @@ from paper_command_center_v1 import load_command_center
 from external_challenger_sam_bateman_v1 import run_external_challenger
 from external_challenger_alpaca_momentum_v1 import run_alpaca_momentum_challenger
 from alpaca_filter_funnel_audit_v1 import run_alpaca_filter_funnel_audit
+from alpaca_macd_source_parity_audit_v1 import run_alpaca_macd_source_parity
 
 app = Flask(__name__)
 
@@ -92,6 +93,7 @@ JOBS = {
     "ext_challenger": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "alpaca_mom": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "alpaca_funnel": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
+    "alpaca_macd_parity": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
 }
 
 HTML = """
@@ -130,6 +132,17 @@ th:first-child,td:first-child{text-align:left}
 <div class="wrap">
 <h1>🇺🇸 US DayTrade Radar <small>Original Engine Parity Audit v1</small></h1>
 
+<div class="card">
+<h2>31. Alpaca Momentum · MACD Source-Parity Audit v1</h2>
+<p><b>只查30的 174/192 → MACD 0 是否由实现错误造成，不改策略参数。</b></p>
+<p class="muted">已核对 Alpaca 原源码：启动时先为每个 symbol 载入 1000 根 1-minute history，随后 MACD(12,26) / MACD(40,60) 都直接在这段跨交易日 minute_history 上计算；不会每天09:30把EMA/MACD清零。</p>
+<p class="muted">这版同时计算：①29当前的 session-reset MACD；②同一持久化历史上的 continuous cross-session MACD。若 reset=0 而 continuous 出现通过样本，就确认29是 MACD warm-up 实现错误。注意现有历史是5min，故这里只用于证明 warm-up/parity，不冒充原版1000根1min的精确数值。</p>
+<button id="alpaca_macd_parityBtn" type="button">Run MACD Source-Parity Audit</button>
+<div class="row"><b>MACD Audit 进度</b><span id="alpaca_macd_parityPct">0%</span></div>
+<div class="track"><div id="alpaca_macd_parityBar" class="bar"></div></div>
+<div id="alpaca_macd_parityMsg" class="msg">尚未开始</div>
+<div id="alpaca_macd_parityResults" class="scroll"></div>
+</div>
 <div class="card">
 <h2>30. Alpaca Momentum · Filter Funnel Audit v1</h2>
 <p><b>只解释29为什么0 trades，不改任何参数。</b></p>
@@ -1022,6 +1035,19 @@ function renderAlpacaFunnel(r){
  $("alpaca_funnelResults").innerHTML=h;
 }
 
+
+function renderAlpacaMacdParity(r){
+ if(!r)return;
+ const row=(n,s)=>`<tr><td>${n}</td><td>${s.base_candidate_symbol_days??0}</td><td>${s.base_candidate_bars??0}</td><td>${s.session_reset_macd12_26_symbol_days??0}</td><td>${s.continuous_macd12_26_symbol_days??0}</td><td>${s.continuous_both_macd_symbol_days??0}</td><td>${s.continuous_both_macd_bars??0}</td></tr>`;
+ let h=`<p><b>${r.study}</b> · <b>${r.verdict}</b></p>`;
+ h+='<table><thead><tr><th>Period</th><th>Base symbol-days</th><th>Base bars</th><th>Reset MACD1 SD</th><th>Continuous MACD1 SD</th><th>Continuous Both SD</th><th>Continuous Both Bars</th></tr></thead><tbody>';
+ h+=row("Discovery",r.discovery||{})+row("True OOS",r.true_oos||{})+'</tbody></table>';
+ h+=`<p><b>Source fact:</b> ${r.source_facts?.history_loader||""}</p>`;
+ h+=`<p><b>Limit:</b> ${r.important_limit||""}</p>`;
+ h+=`<p><b>Next:</b> ${r.next_step||""}</p>`;
+ $("alpaca_macd_parityResults").innerHTML=h;
+}
+
 async function poll(kind){
   try{
     const r=await fetch("/job/"+kind,{cache:"no-store"});
@@ -1054,6 +1080,7 @@ async function poll(kind){
     if(d.result && kind==="ext_challenger") renderExtChallenger(d.result);
     if(d.result && kind==="alpaca_mom") renderAlpacaMom(d.result);
     if(d.result && kind==="alpaca_funnel") renderAlpacaFunnel(d.result);
+    if(d.result && kind==="alpaca_macd_parity") renderAlpacaMacdParity(d.result);
     if(d.data_exists) $("dataState").textContent="✅ Data ready";
     if(d.running) setTimeout(()=>poll(kind),800);
   }catch(e){
@@ -1121,7 +1148,7 @@ $("autopsyBtn").addEventListener("click", async ()=>{
 $("tournamentBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-tournament",{method:"POST"})).json(); setProgress("tournament",d); poll("tournament"); });
 
 $("od_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-audit",{method:"POST"})).json(); setProgress("od_audit",d); poll("od_audit"); });
-$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); poll("orig_v01"); poll("parity_audit"); poll("orig_tz"); poll("qc_bench"); poll("qc_1m"); poll("bt_parity"); poll("bt_parity_v2"); poll("trade_parity"); poll("entry_truth"); poll("paper_fwd"); poll("command_center"); poll("ext_challenger"); poll("alpaca_mom"); poll("alpaca_funnel"); });
+$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); poll("orig_v01"); poll("parity_audit"); poll("orig_tz"); poll("qc_bench"); poll("qc_1m"); poll("bt_parity"); poll("bt_parity_v2"); poll("trade_parity"); poll("entry_truth"); poll("paper_fwd"); poll("command_center"); poll("ext_challenger"); poll("alpaca_mom"); poll("alpaca_funnel"); poll("alpaca_macd_parity"); });
 $("orb_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-orb-audit",{method:"POST"})).json(); setProgress("orb_audit",d); poll("orb_audit"); });
 $("fp_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-fp-audit",{method:"POST"})).json(); setProgress("fp_audit",d); poll("fp_audit"); });
 $("mc_trialBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-mc-trial",{method:"POST"})).json(); setProgress("mc_trial",d); poll("mc_trial"); });
@@ -1139,6 +1166,7 @@ $("command_centerBtn").addEventListener("click", async ()=>{ const d=await (awai
 $("ext_challengerBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-ext-challenger",{method:"POST"})).json(); setProgress("ext_challenger",d); poll("ext_challenger"); });
 $("alpaca_momBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-alpaca-mom",{method:"POST"})).json(); setProgress("alpaca_mom",d); poll("alpaca_mom"); });
 $("alpaca_funnelBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-alpaca-funnel",{method:"POST"})).json(); setProgress("alpaca_funnel",d); poll("alpaca_funnel"); });
+$("alpaca_macd_parityBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-alpaca-macd-parity",{method:"POST"})).json(); setProgress("alpaca_macd_parity",d); poll("alpaca_macd_parity"); });
 
 $("rescanBtn").addEventListener("click", async ()=>{
   try{
@@ -2359,6 +2387,29 @@ def start_alpaca_funnel():
     time.sleep(.05)
     with LOCK:
         return jsonify(JOBS["alpaca_funnel"])
+
+
+
+def alpaca_macd_parity_worker():
+    try:
+        def cb(pct,msg): set_job("alpaca_macd_parity",running=True,progress=int(pct),message=msg,ok=None)
+        set_job("alpaca_macd_parity",running=True,progress=1,message="核对 source MACD warm-up：不改阈值、不重跑策略…",ok=None,result=None)
+        result=run_alpaca_macd_source_parity(progress_cb=cb)
+        set_job("alpaca_macd_parity",running=False,progress=100,
+                message=f"✅ MACD Source-Parity · {result['verdict']}",
+                ok=True,result=result)
+    except Exception as e:
+        set_job("alpaca_macd_parity",running=False,progress=100,message=f"❌ {type(e).__name__}: {e}",ok=False)
+
+@app.post("/start-alpaca-macd-parity")
+def start_alpaca_macd_parity():
+    with LOCK:
+        if JOBS["alpaca_macd_parity"]["running"]:
+            return jsonify(JOBS["alpaca_macd_parity"])
+    threading.Thread(target=alpaca_macd_parity_worker,daemon=True).start()
+    time.sleep(.05)
+    with LOCK:
+        return jsonify(JOBS["alpaca_macd_parity"])
 
 
 @app.post("/start-download")
