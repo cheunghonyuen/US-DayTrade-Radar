@@ -34,6 +34,7 @@ from alpaca_filter_funnel_audit_v1 import run_alpaca_filter_funnel_audit
 from alpaca_macd_source_parity_audit_v1 import run_alpaca_macd_source_parity
 from alpaca_momentum_source_locked_v2 import run_alpaca_momentum_source_locked_v2
 from external_challenger3_vwap_mean_reversion_v1 import run_external_challenger3
+from historical_depth_preflight_v1 import run_historical_depth_preflight, run_historical_depth_build
 
 app = Flask(__name__)
 
@@ -98,6 +99,8 @@ JOBS = {
     "alpaca_macd_parity": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "alpaca_v2": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "challenger3": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
+    "hist_pre": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
+    "hist_build": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
 }
 
 HTML = """
@@ -136,6 +139,18 @@ th:first-child,td:first-child{text-align:left}
 <div class="wrap">
 <h1>🇺🇸 US DayTrade Radar <small>Original Engine Parity Audit v1</small></h1>
 
+<div class="card">
+<h2>34. Historical Depth / Universe Expansion v1</h2>
+<p><b>先补 formation history，不调策略。</b> 为 Pairs / Regime / Walk-Forward / 更大 Universe 准备5+年日线；26 Frozen Forward完全不动。</p>
+<p class="muted">A先做真实Preflight：125 symbols、现有Replay日期、Tiingo daily schema、5个样本、预计行数/空间/请求数。A PASS才允许B构建。</p>
+<p class="muted">B写入 /data/daytrade/formation_daily_v1，目标 2021-01-01 → 2026-08-30。已有合格缓存直接复用，不重下，不碰True OOS或Paper Forward。</p>
+<button id="hist_preBtn">A. Run Historical Depth Preflight</button>
+<div class="row"><b>Preflight</b><span id="hist_prePct">0%</span></div><div class="track"><div id="hist_preBar" class="bar"></div></div>
+<div id="hist_preMsg" class="msg">尚未开始</div><div id="hist_preResults" class="scroll"></div><br>
+<button id="hist_buildBtn">B. Build 5Y Daily Formation Cache</button>
+<div class="row"><b>Build</b><span id="hist_buildPct">0%</span></div><div class="track"><div id="hist_buildBar" class="bar"></div></div>
+<div id="hist_buildMsg" class="msg">尚未开始</div><div id="hist_buildResults" class="scroll"></div>
+</div>
 <div class="card">
 <h2>33. External Challenger #3 · VWAP Mean Reversion v1</h2>
 <p><b>换第三种 edge family：VWAP Mean Reversion。</b> 26 Frozen Champion 完全不动。</p>
@@ -1102,6 +1117,22 @@ function renderChallenger3(r){
  $("challenger3Results").innerHTML=h;
 }
 
+
+function renderHistPre(r){
+ if(!r)return; let h=`<p><b>${r.study}</b> · <b>${r.verdict}</b></p>`;
+ h+=`<p>Replay ${r.persistent_replay?.symbols??0} symbols · ${r.persistent_replay?.rows??0} rows · ${r.persistent_replay?.min??""} → ${r.persistent_replay?.max??""}</p>`;
+ h+=`<p>Target ${r.target?.start} → ${r.target?.end} · est ${r.estimated_rows??0} daily rows · ~${r.estimated_storage_mb??0} MB · ${r.requests_needed??0} requests</p>`;
+ h+='<table><thead><tr><th>Symbol</th><th>Rows</th><th>Min</th><th>Max</th></tr></thead><tbody>';
+ (r.samples||[]).forEach(x=>h+=`<tr><td>${x.symbol}</td><td>${x.rows}</td><td>${x.date_min}</td><td>${x.date_max}</td></tr>`);
+ h+='</tbody></table><p>'+ (r.guardrail||"") +'</p>'; $("hist_preResults").innerHTML=h;
+}
+function renderHistBuild(r){
+ if(!r)return; let h=`<p><b>${r.study}</b> · <b>${r.verdict}</b></p>`;
+ h+=`<p>Ready ${r.symbols_ready??0}/${r.symbols_expected??0} · rows ${r.rows_total??0} · reused ${r.reused??0} · downloaded ${r.downloaded??0} · errors ${(r.errors||[]).length}</p>`;
+ if((r.errors||[]).length){h+='<table><thead><tr><th>Symbol</th><th>Error</th></tr></thead><tbody>';(r.errors||[]).slice(0,20).forEach(x=>h+=`<tr><td>${x.symbol}</td><td>${x.error}</td></tr>`);h+='</tbody></table>';}
+ h+=`<p>${r.next_use||""}</p>`; $("hist_buildResults").innerHTML=h;
+}
+
 async function poll(kind){
   try{
     const r=await fetch("/job/"+kind,{cache:"no-store"});
@@ -1137,6 +1168,8 @@ async function poll(kind){
     if(d.result && kind==="alpaca_macd_parity") renderAlpacaMacdParity(d.result);
     if(d.result && kind==="alpaca_v2") renderAlpacaV2(d.result);
     if(d.result && kind==="challenger3") renderChallenger3(d.result);
+    if(d.result && kind==="hist_pre") renderHistPre(d.result);
+    if(d.result && kind==="hist_build") renderHistBuild(d.result);
     if(d.data_exists) $("dataState").textContent="✅ Data ready";
     if(d.running) setTimeout(()=>poll(kind),800);
   }catch(e){
@@ -1204,7 +1237,7 @@ $("autopsyBtn").addEventListener("click", async ()=>{
 $("tournamentBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-tournament",{method:"POST"})).json(); setProgress("tournament",d); poll("tournament"); });
 
 $("od_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-audit",{method:"POST"})).json(); setProgress("od_audit",d); poll("od_audit"); });
-$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); poll("orig_v01"); poll("parity_audit"); poll("orig_tz"); poll("qc_bench"); poll("qc_1m"); poll("bt_parity"); poll("bt_parity_v2"); poll("trade_parity"); poll("entry_truth"); poll("paper_fwd"); poll("command_center"); poll("ext_challenger"); poll("alpaca_mom"); poll("alpaca_funnel"); poll("alpaca_macd_parity"); poll("alpaca_v2"); poll("challenger3"); });
+$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); poll("orig_v01"); poll("parity_audit"); poll("orig_tz"); poll("qc_bench"); poll("qc_1m"); poll("bt_parity"); poll("bt_parity_v2"); poll("trade_parity"); poll("entry_truth"); poll("paper_fwd"); poll("command_center"); poll("ext_challenger"); poll("alpaca_mom"); poll("alpaca_funnel"); poll("alpaca_macd_parity"); poll("alpaca_v2"); poll("challenger3"); poll("hist_pre"); poll("hist_build"); });
 $("orb_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-orb-audit",{method:"POST"})).json(); setProgress("orb_audit",d); poll("orb_audit"); });
 $("fp_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-fp-audit",{method:"POST"})).json(); setProgress("fp_audit",d); poll("fp_audit"); });
 $("mc_trialBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-mc-trial",{method:"POST"})).json(); setProgress("mc_trial",d); poll("mc_trial"); });
@@ -1225,6 +1258,8 @@ $("alpaca_funnelBtn").addEventListener("click", async ()=>{ const d=await (await
 $("alpaca_macd_parityBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-alpaca-macd-parity",{method:"POST"})).json(); setProgress("alpaca_macd_parity",d); poll("alpaca_macd_parity"); });
 $("alpaca_v2Btn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-alpaca-v2",{method:"POST"})).json(); setProgress("alpaca_v2",d); poll("alpaca_v2"); });
 $("challenger3Btn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-challenger3",{method:"POST"})).json(); setProgress("challenger3",d); poll("challenger3"); });
+$("hist_preBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-hist-pre",{method:"POST"})).json(); setProgress("hist_pre",d); poll("hist_pre"); });
+$("hist_buildBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-hist-build",{method:"POST"})).json(); setProgress("hist_build",d); poll("hist_build"); });
 
 $("rescanBtn").addEventListener("click", async ()=>{
   try{
@@ -2518,6 +2553,38 @@ def start_challenger3():
     time.sleep(.05)
     with LOCK:
         return jsonify(JOBS["challenger3"])
+
+
+
+def hist_pre_worker():
+    try:
+        def cb(p,m): set_job("hist_pre",running=True,progress=int(p),message=m,ok=None)
+        set_job("hist_pre",running=True,progress=1,message="Historical Depth Preflight…",ok=None,result=None)
+        r=run_historical_depth_preflight(progress_cb=cb)
+        set_job("hist_pre",running=False,progress=100,message=f"✅ Preflight {r['verdict']} · est {r.get('estimated_rows',0)} rows",ok=(r["verdict"]=="PASS"),result=r)
+    except Exception as e:set_job("hist_pre",running=False,progress=100,message=f"❌ {type(e).__name__}: {e}",ok=False)
+
+@app.post("/start-hist-pre")
+def start_hist_pre():
+    with LOCK:
+        if JOBS["hist_pre"]["running"]: return jsonify(JOBS["hist_pre"])
+    threading.Thread(target=hist_pre_worker,daemon=True).start(); time.sleep(.05)
+    with LOCK:return jsonify(JOBS["hist_pre"])
+
+def hist_build_worker():
+    try:
+        def cb(p,m): set_job("hist_build",running=True,progress=int(p),message=m,ok=None)
+        set_job("hist_build",running=True,progress=1,message="Building persistent 5Y daily cache…",ok=None,result=None)
+        r=run_historical_depth_build(progress_cb=cb)
+        set_job("hist_build",running=False,progress=100,message=f"✅ Build {r['verdict']} · {r.get('symbols_ready',0)}/{r.get('symbols_expected',0)} symbols",ok=(r["verdict"]=="PASS"),result=r)
+    except Exception as e:set_job("hist_build",running=False,progress=100,message=f"❌ {type(e).__name__}: {e}",ok=False)
+
+@app.post("/start-hist-build")
+def start_hist_build():
+    with LOCK:
+        if JOBS["hist_build"]["running"]: return jsonify(JOBS["hist_build"])
+    threading.Thread(target=hist_build_worker,daemon=True).start(); time.sleep(.05)
+    with LOCK:return jsonify(JOBS["hist_build"])
 
 
 @app.post("/start-download")
