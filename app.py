@@ -19,6 +19,7 @@ from first_pullback_frozen_audit_v1 import run_first_pullback_frozen_audit
 from momentum_continuation_final_trial_v1 import run_momentum_continuation_final_trial
 from exact_original_v01_replay import run_exact_original_v01
 from original_engine_parity_audit_v1 import run_original_parity_audit
+from original_v01_tzfixed_replay import run_original_tz_fixed_replay
 
 app = Flask(__name__)
 
@@ -68,6 +69,7 @@ JOBS = {
     "mc_trial": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "orig_v01": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "parity_audit": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
+    "orig_tz": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
 }
 
 HTML = """
@@ -306,6 +308,18 @@ th:first-child,td:first-child{text-align:left}
 <div class="track"><div id="parity_auditBar" class="bar"></div></div>
 <div id="parity_auditMsg" class="msg">尚未开始</div>
 <div id="parity_auditResults" class="scroll"></div>
+</div>
+
+<div class="card">
+<h2>19. Exact Original MVP v0.1 · TZ-Fixed Replay</h2>
+<p><b>现在正式跑原版。</b> 交易规则完全不改，只修复 18 已确认的输入 parity：UTC timestamp → America/New_York → naive local wall-clock，再交给 preserved MVP v0.1 engine。</p>
+<p class="muted">同一批 125 Stocks-in-Play；同一 Discovery + True OOS 时间段；原始 Gap 3%-20% / RVOL ≥1.2 / OR20 / 10:00-11:30 / 0.5×OR stop / 1.5R target / 15:50 EOD / 原始手续费与滑点。</p>
+<p class="muted">这一步才是有效的 Original-vs-our-data 泛化测试。不会重新下载，不会改参数。</p>
+<button id="orig_tzBtn" type="button">Run Exact Original · TZ-Fixed</button>
+<div class="row"><b>Original Replay 进度</b><span id="orig_tzPct">0%</span></div>
+<div class="track"><div id="orig_tzBar" class="bar"></div></div>
+<div id="orig_tzMsg" class="msg">尚未开始</div>
+<div id="orig_tzResults" class="scroll"></div>
 </div>
 
 <div class="card">
@@ -632,6 +646,25 @@ function renderParityAudit(r){
  $("parity_auditResults").innerHTML=h;
 }
 
+
+function renderOrigTZ(r){
+ if(!r)return;
+ const d=r.discovery||{},o=r.true_oos||{},p=r.parity||{};
+ const pct=x=>(Number(x||0)*100).toFixed(1);
+ let h=`<p><b>${r.study}</b></p>`;
+ h+=`<p><b>Rule changes:</b> ${r.rule_changes}</p>`;
+ h+=`<p><b>Parity fix:</b> ${r.input_parity_fix}</p>`;
+ h+='<table><thead><tr><th>Period</th><th>Trades</th><th>Win%</th><th>PF</th><th>Avg R</th><th>MaxDD%</th><th>Net PnL</th><th>Stop%</th><th>Target%</th></tr></thead><tbody>';
+ h+=`<tr><td>Discovery</td><td>${d.trades??"—"}</td><td>${pct(d.win_rate)}</td><td>${d.profit_factor??"—"}</td><td>${d.avg_r??"—"}</td><td>${d.max_drawdown_pct??"—"}</td><td>${d.net_pnl??"—"}</td><td>${pct(d.stop_rate)}</td><td>${pct(d.target_rate)}</td></tr>`;
+ h+=`<tr><td>True OOS</td><td>${o.trades??"—"}</td><td>${pct(o.win_rate)}</td><td>${o.profit_factor??"—"}</td><td>${o.avg_r??"—"}</td><td>${o.max_drawdown_pct??"—"}</td><td>${o.net_pnl??"—"}</td><td>${pct(o.stop_rate)}</td><td>${pct(o.target_rate)}</td></tr>`;
+ h+='</tbody></table>';
+ if(p.discovery && p.true_oos){
+   h+=`<p><b>Parity:</b> Discovery NY ${p.discovery.ny_time_min}→${p.discovery.ny_time_max}, trades ${p.discovery.trades}; True OOS NY ${p.true_oos.ny_time_min}→${p.true_oos.ny_time_max}, trades ${p.true_oos.trades}</p>`;
+ }
+ h+=`<p><b>Decision rule:</b> ${r.decision_rule}</p>`;
+ $("orig_tzResults").innerHTML=h;
+}
+
 async function poll(kind){
   try{
     const r=await fetch("/job/"+kind,{cache:"no-store"});
@@ -652,6 +685,7 @@ async function poll(kind){
     if(d.result && kind==="mc_trial") renderMCTrial(d.result);
     if(d.result && kind==="orig_v01") renderOrigV01(d.result);
     if(d.result && kind==="parity_audit") renderParityAudit(d.result);
+    if(d.result && kind==="orig_tz") renderOrigTZ(d.result);
     if(d.data_exists) $("dataState").textContent="✅ Data ready";
     if(d.running) setTimeout(()=>poll(kind),800);
   }catch(e){
@@ -719,12 +753,13 @@ $("autopsyBtn").addEventListener("click", async ()=>{
 $("tournamentBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-tournament",{method:"POST"})).json(); setProgress("tournament",d); poll("tournament"); });
 
 $("od_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-audit",{method:"POST"})).json(); setProgress("od_audit",d); poll("od_audit"); });
-$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); poll("orig_v01"); poll("parity_audit"); });
+$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); poll("orig_v01"); poll("parity_audit"); poll("orig_tz"); });
 $("orb_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-orb-audit",{method:"POST"})).json(); setProgress("orb_audit",d); poll("orb_audit"); });
 $("fp_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-fp-audit",{method:"POST"})).json(); setProgress("fp_audit",d); poll("fp_audit"); });
 $("mc_trialBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-mc-trial",{method:"POST"})).json(); setProgress("mc_trial",d); poll("mc_trial"); });
 $("orig_v01Btn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-orig-v01",{method:"POST"})).json(); setProgress("orig_v01",d); poll("orig_v01"); });
 $("parity_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-parity-audit",{method:"POST"})).json(); setProgress("parity_audit",d); poll("parity_audit"); });
+$("orig_tzBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-orig-tz",{method:"POST"})).json(); setProgress("orig_tz",d); poll("orig_tz"); });
 
 $("rescanBtn").addEventListener("click", async ()=>{
   try{
@@ -1637,6 +1672,53 @@ def start_parity_audit():
     time.sleep(.05)
     with LOCK:
         return jsonify(JOBS["parity_audit"])
+
+
+
+def orig_tz_worker():
+    if not SIP_DATA.exists() or not OOS_DATA.exists():
+        set_job(
+            "orig_tz", running=False, progress=100,
+            message="❌ 缺少现有 Discovery / True OOS Persistent Replay。不要重新下载；先 Run Preflight。",
+            ok=False
+        )
+        return
+    try:
+        def cb(pct, msg):
+            set_job("orig_tz", running=True, progress=int(pct), message=msg, ok=None)
+
+        set_job(
+            "orig_tz", running=True, progress=2,
+            message="18 parity 已确认；现在做 UTC→NY 输入修复后运行 preserved original engine…",
+            ok=None, result=None
+        )
+
+        result = run_original_tz_fixed_replay(
+            str(SIP_DATA), str(OOS_DATA),
+            str(OUT / "original_v01_tzfixed_replay"),
+            progress_cb=cb
+        )
+
+        set_job(
+            "orig_tz", running=False, progress=100,
+            message=f"✅ Original TZ-Fixed Replay 完成 · D PF {result['discovery'].get('profit_factor')} / OOS PF {result['true_oos'].get('profit_factor')}",
+            ok=True, result=result
+        )
+    except Exception as e:
+        set_job(
+            "orig_tz", running=False, progress=100,
+            message=f"❌ {type(e).__name__}: {e}", ok=False
+        )
+
+@app.post("/start-orig-tz")
+def start_orig_tz():
+    with LOCK:
+        if JOBS["orig_tz"]["running"]:
+            return jsonify(JOBS["orig_tz"])
+    threading.Thread(target=orig_tz_worker, daemon=True).start()
+    time.sleep(.05)
+    with LOCK:
+        return jsonify(JOBS["orig_tz"])
 
 
 @app.post("/start-download")
