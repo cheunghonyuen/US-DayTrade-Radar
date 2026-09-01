@@ -20,6 +20,7 @@ from momentum_continuation_final_trial_v1 import run_momentum_continuation_final
 from exact_original_v01_replay import run_exact_original_v01
 from original_engine_parity_audit_v1 import run_original_parity_audit
 from original_v01_tzfixed_replay import run_original_tz_fixed_replay
+from qc_stocks_in_play_benchmark_v1 import run_qc_stocks_in_play_benchmark
 
 app = Flask(__name__)
 
@@ -70,6 +71,7 @@ JOBS = {
     "orig_v01": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "parity_audit": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "orig_tz": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
+    "qc_bench": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
 }
 
 HTML = """
@@ -320,6 +322,18 @@ th:first-child,td:first-child{text-align:left}
 <div class="track"><div id="orig_tzBar" class="bar"></div></div>
 <div id="orig_tzMsg" class="msg">尚未开始</div>
 <div id="orig_tzResults" class="scroll"></div>
+</div>
+
+<div class="card">
+<h2>20. QuantConnect Stocks-in-Play ORB Benchmark v1</h2>
+<p><b>外部高质量 Benchmark。</b> 不再修旧 MVP，也不扫参数。</p>
+<p class="muted">按 QuantConnect/Zarattini ORB 公开规则移植：5min Opening Range、Price&gt;$5、ATR14&gt;$0.50、首5分钟 RVOL&gt;1、每天 Top20 RVOL、绿色开盘棒向上突破做多/红色向下突破做空、Stop=0.1×ATR、赢家拿到收盘。</p>
+<p class="muted"><b>限制透明：</b>原研究 universe 是更大的高流动美股池；这里先严格限制在我们已有 125 Stocks-in-Play，不重新下载。因为我们只有5分钟数据，同时报告“同bar stop-first”与“下一bar stop生效”两个边界，避免用一个随意的成交顺序制造漂亮结果。</p>
+<button id="qc_benchBtn" type="button">Run QuantConnect External Benchmark</button>
+<div class="row"><b>Benchmark 进度</b><span id="qc_benchPct">0%</span></div>
+<div class="track"><div id="qc_benchBar" class="bar"></div></div>
+<div id="qc_benchMsg" class="msg">尚未开始</div>
+<div id="qc_benchResults" class="scroll"></div>
 </div>
 
 <div class="card">
@@ -665,6 +679,24 @@ function renderOrigTZ(r){
  $("orig_tzResults").innerHTML=h;
 }
 
+
+function renderQCBench(r){
+ if(!r)return;
+ const d=r.discovery||{},o=r.true_oos||{};
+ const ds=d.strict||{}, dd=d.delayed_stop||{}, os=o.strict||{}, od=o.delayed_stop||{};
+ let h=`<p><b>${r.study}</b></p>`;
+ h+=`<p><b>Constraint:</b> ${r.fidelity.known_constraint}</p>`;
+ h+='<table><thead><tr><th>Period / Fill bound</th><th>Trades</th><th>Win%</th><th>PF</th><th>AvgR</th><th>MedianR</th><th>MaxDD(R)</th><th>Stop%</th></tr></thead><tbody>';
+ const row=(name,x)=>`<tr><td>${name}</td><td>${x.trades??0}</td><td>${(Number(x.win_rate||0)*100).toFixed(1)}</td><td>${x.profit_factor??0}</td><td>${x.avg_r??0}</td><td>${x.median_r??0}</td><td>${x.max_dd_r??0}</td><td>${(Number(x.stop_rate||0)*100).toFixed(1)}</td></tr>`;
+ h+=row("Discovery · strict",ds)+row("Discovery · delayed-stop",dd)+row("True OOS · strict",os)+row("True OOS · delayed-stop",od);
+ h+='</tbody></table>';
+ const b=o.bootstrap_strict||{};
+ h+=`<p><b>OOS strict bootstrap:</b> P(PF&gt;1) ${(Number(b.prob_pf_gt1||0)*100).toFixed(1)}% · PF95% [${(b.pf_ci95||[]).join(", ")}] · P(AvgR&gt;0) ${(Number(b.prob_avg_r_gt0||0)*100).toFixed(1)}%</p>`;
+ h+=`<p><b>Meta:</b> Discovery candidates ${d.meta?.eligible_candidates??0}; OOS candidates ${o.meta?.eligible_candidates??0}; symbols ${o.meta?.symbols??0}</p>`;
+ h+=`<p><b>Decision:</b> ${r.decision_rule}</p>`;
+ $("qc_benchResults").innerHTML=h;
+}
+
 async function poll(kind){
   try{
     const r=await fetch("/job/"+kind,{cache:"no-store"});
@@ -686,6 +718,7 @@ async function poll(kind){
     if(d.result && kind==="orig_v01") renderOrigV01(d.result);
     if(d.result && kind==="parity_audit") renderParityAudit(d.result);
     if(d.result && kind==="orig_tz") renderOrigTZ(d.result);
+    if(d.result && kind==="qc_bench") renderQCBench(d.result);
     if(d.data_exists) $("dataState").textContent="✅ Data ready";
     if(d.running) setTimeout(()=>poll(kind),800);
   }catch(e){
@@ -753,13 +786,14 @@ $("autopsyBtn").addEventListener("click", async ()=>{
 $("tournamentBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-tournament",{method:"POST"})).json(); setProgress("tournament",d); poll("tournament"); });
 
 $("od_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-audit",{method:"POST"})).json(); setProgress("od_audit",d); poll("od_audit"); });
-$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); poll("orig_v01"); poll("parity_audit"); poll("orig_tz"); });
+$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); poll("orig_v01"); poll("parity_audit"); poll("orig_tz"); poll("qc_bench"); });
 $("orb_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-orb-audit",{method:"POST"})).json(); setProgress("orb_audit",d); poll("orb_audit"); });
 $("fp_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-fp-audit",{method:"POST"})).json(); setProgress("fp_audit",d); poll("fp_audit"); });
 $("mc_trialBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-mc-trial",{method:"POST"})).json(); setProgress("mc_trial",d); poll("mc_trial"); });
 $("orig_v01Btn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-orig-v01",{method:"POST"})).json(); setProgress("orig_v01",d); poll("orig_v01"); });
 $("parity_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-parity-audit",{method:"POST"})).json(); setProgress("parity_audit",d); poll("parity_audit"); });
 $("orig_tzBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-orig-tz",{method:"POST"})).json(); setProgress("orig_tz",d); poll("orig_tz"); });
+$("qc_benchBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-qc-bench",{method:"POST"})).json(); setProgress("qc_bench",d); poll("qc_bench"); });
 
 $("rescanBtn").addEventListener("click", async ()=>{
   try{
@@ -1719,6 +1753,32 @@ def start_orig_tz():
     time.sleep(.05)
     with LOCK:
         return jsonify(JOBS["orig_tz"])
+
+
+
+def qc_bench_worker():
+    if not SIP_DATA.exists() or not OOS_DATA.exists():
+        set_job("qc_bench",running=False,progress=100,message="❌ 缺少现有 Discovery / True OOS Persistent Replay。不要重新下载。",ok=False)
+        return
+    try:
+        def cb(pct,msg): set_job("qc_bench",running=True,progress=int(pct),message=msg,ok=None)
+        set_job("qc_bench",running=True,progress=1,message="读取现有两年 Persistent Replay；不下载、不调参数…",ok=None,result=None)
+        result=run_qc_stocks_in_play_benchmark(
+            str(SIP_DATA),str(OOS_DATA),str(OUT/"qc_stocks_in_play_benchmark_v1"),progress_cb=cb
+        )
+        set_job("qc_bench",running=False,progress=100,message="✅ QuantConnect External Benchmark 完成",ok=True,result=result)
+    except Exception as e:
+        set_job("qc_bench",running=False,progress=100,message=f"❌ {type(e).__name__}: {e}",ok=False)
+
+@app.post("/start-qc-bench")
+def start_qc_bench():
+    with LOCK:
+        if JOBS["qc_bench"]["running"]:
+            return jsonify(JOBS["qc_bench"])
+    threading.Thread(target=qc_bench_worker,daemon=True).start()
+    time.sleep(.05)
+    with LOCK:
+        return jsonify(JOBS["qc_bench"])
 
 
 @app.post("/start-download")
