@@ -28,6 +28,7 @@ from trade_level_parity_audit_v1 import run_trade_level_parity_audit
 from entry_fill_truth_audit_v1 import run_entry_fill_truth_audit
 from paper_forward_test_v1 import run_paper_forward_update
 from paper_command_center_v1 import load_command_center
+from external_challenger_sam_bateman_v1 import run_external_challenger
 
 app = Flask(__name__)
 
@@ -86,6 +87,7 @@ JOBS = {
     "entry_truth": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "paper_fwd": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "command_center": {"running": False, "progress": 0, "message": "尚未刷新", "ok": None, "result": None},
+    "ext_challenger": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
 }
 
 HTML = """
@@ -124,6 +126,17 @@ th:first-child,td:first-child{text-align:left}
 <div class="wrap">
 <h1>🇺🇸 US DayTrade Radar <small>Original Engine Parity Audit v1</small></h1>
 
+<div class="card">
+<h2>28. External Challenger #1 · trading-orb v1</h2>
+<p><b>外部原版 Challenger，不改26。</b> 来源：sam-bateman/trading-orb 的 10-year validated final config。</p>
+<p class="muted">锁死参数：OR20 / RVOL≥1.2 / 10:00–11:30 / Long+Short / Target 0.75×OR / Stop 0.50×OR / Next-bar-open fill / $0.01 slippage + $0.005 commission / $400 risk / max 3 positions / $600 daily loss / 15:50 flatten / +1 OR 后 stop→breakeven。</p>
+<p class="muted"><b>公平限制：</b>作者原本筛选20只股票；这里不借用作者股票池，直接跑我们同一125股票 Discovery + True OOS。绝不扫参数，结果差就DROP。</p>
+<button id="ext_challengerBtn" type="button">Run External Challenger #1</button>
+<div class="row"><b>Challenger 进度</b><span id="ext_challengerPct">0%</span></div>
+<div class="track"><div id="ext_challengerBar" class="bar"></div></div>
+<div id="ext_challengerMsg" class="msg">尚未开始</div>
+<div id="ext_challengerResults" class="scroll"></div>
+</div>
 <div class="card">
 <h2>27. Paper Trading Command Center v1</h2>
 <p><b>26 的只读实战观察台。</b> 不改策略、不下载新历史、不重新计算旧交易。</p>
@@ -935,6 +948,24 @@ function renderCommandCenter(r){
  $("command_centerResults").innerHTML=h;
 }
 
+
+function renderExtChallenger(r){
+ if(!r)return;
+ const d=(r.discovery||{}).metrics||{}, o=(r.true_oos||{}).metrics||{}, b=(r.true_oos||{}).bootstrap||{};
+ const pct=x=>(Number(x||0)*100).toFixed(1);
+ let h=`<p><b>${r.study}</b></p>`;
+ h+=`<p><b>Constraint:</b> ${r.fidelity?.constraint||""}</p>`;
+ h+='<table><thead><tr><th>Period</th><th>Signals</th><th>Trades</th><th>Win%</th><th>PF</th><th>AvgR</th><th>MedianR</th><th>MaxDD(R)</th><th>Net PnL</th><th>L/S</th></tr></thead><tbody>';
+ h+=`<tr><td>Discovery</td><td>${r.discovery?.signals??0}</td><td>${d.trades??0}</td><td>${pct(d.win_rate)}</td><td>${d.profit_factor??0}</td><td>${d.avg_r??0}</td><td>${d.median_r??0}</td><td>${d.max_dd_r??0}</td><td>${d.net_pnl??0}</td><td>${d.long_trades??0}/${d.short_trades??0}</td></tr>`;
+ h+=`<tr><td>True OOS</td><td>${r.true_oos?.signals??0}</td><td>${o.trades??0}</td><td>${pct(o.win_rate)}</td><td>${o.profit_factor??0}</td><td>${o.avg_r??0}</td><td>${o.median_r??0}</td><td>${o.max_dd_r??0}</td><td>${o.net_pnl??0}</td><td>${o.long_trades??0}/${o.short_trades??0}</td></tr>`;
+ h+='</tbody></table>';
+ h+=`<p><b>OOS bootstrap:</b> P(PF&gt;1) ${pct(b.prob_pf_gt1)} · PF95% [${(b.pf_ci95||[]).join(", ")}] · P(AvgR&gt;0) ${pct(b.prob_avg_r_gt0)}</p>`;
+ const a=r.author_claim_reference||{};
+ h+=`<p><b>Author reference:</b> ${a.trades||0} trades · Win ${a.win_rate_pct||0}% · PF ${a.profit_factor||0} · Sharpe ${a.sharpe||0} · MaxDD ${a.max_drawdown_pct||0}%</p>`;
+ h+=`<p><b>Decision:</b> ${r.decision_rule||""}</p>`;
+ $("ext_challengerResults").innerHTML=h;
+}
+
 async function poll(kind){
   try{
     const r=await fetch("/job/"+kind,{cache:"no-store"});
@@ -964,6 +995,7 @@ async function poll(kind){
     if(d.result && kind==="entry_truth") renderEntryTruth(d.result);
     if(d.result && kind==="paper_fwd") renderPaperFwd(d.result);
     if(d.result && kind==="command_center") renderCommandCenter(d.result);
+    if(d.result && kind==="ext_challenger") renderExtChallenger(d.result);
     if(d.data_exists) $("dataState").textContent="✅ Data ready";
     if(d.running) setTimeout(()=>poll(kind),800);
   }catch(e){
@@ -1031,7 +1063,7 @@ $("autopsyBtn").addEventListener("click", async ()=>{
 $("tournamentBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-tournament",{method:"POST"})).json(); setProgress("tournament",d); poll("tournament"); });
 
 $("od_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-audit",{method:"POST"})).json(); setProgress("od_audit",d); poll("od_audit"); });
-$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); poll("orig_v01"); poll("parity_audit"); poll("orig_tz"); poll("qc_bench"); poll("qc_1m"); poll("bt_parity"); poll("bt_parity_v2"); poll("trade_parity"); poll("entry_truth"); poll("paper_fwd"); poll("command_center"); });
+$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); poll("orig_v01"); poll("parity_audit"); poll("orig_tz"); poll("qc_bench"); poll("qc_1m"); poll("bt_parity"); poll("bt_parity_v2"); poll("trade_parity"); poll("entry_truth"); poll("paper_fwd"); poll("command_center"); poll("ext_challenger"); });
 $("orb_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-orb-audit",{method:"POST"})).json(); setProgress("orb_audit",d); poll("orb_audit"); });
 $("fp_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-fp-audit",{method:"POST"})).json(); setProgress("fp_audit",d); poll("fp_audit"); });
 $("mc_trialBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-mc-trial",{method:"POST"})).json(); setProgress("mc_trial",d); poll("mc_trial"); });
@@ -1046,6 +1078,7 @@ $("trade_parityBtn").addEventListener("click", async ()=>{ const d=await (await 
 $("entry_truthBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-entry-truth",{method:"POST"})).json(); setProgress("entry_truth",d); poll("entry_truth"); });
 $("paper_fwdBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-paper-fwd",{method:"POST"})).json(); setProgress("paper_fwd",d); poll("paper_fwd"); });
 $("command_centerBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-command-center",{method:"POST"})).json(); setProgress("command_center",d); poll("command_center"); });
+$("ext_challengerBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-ext-challenger",{method:"POST"})).json(); setProgress("ext_challenger",d); poll("ext_challenger"); });
 
 $("rescanBtn").addEventListener("click", async ()=>{
   try{
@@ -2193,6 +2226,31 @@ def start_command_center():
     time.sleep(.05)
     with LOCK:
         return jsonify(JOBS["command_center"])
+
+
+
+def ext_challenger_worker():
+    try:
+        def cb(pct,msg): set_job("ext_challenger",running=True,progress=int(pct),message=msg,ok=None)
+        set_job("ext_challenger",running=True,progress=1,message="Source-locked external challenger · schema/timezone preflight…",ok=None,result=None)
+        result=run_external_challenger(progress_cb=cb)
+        m=result["true_oos"]["metrics"]; b=result["true_oos"]["bootstrap"]
+        passed=(m["profit_factor"]>1 and m["avg_r"]>0 and b.get("prob_pf_gt1",0)>=0.80)
+        set_job("ext_challenger",running=False,progress=100,
+                message=f"✅ External Challenger · OOS PF {m['profit_factor']} · AvgR {m['avg_r']} · {'PROMOTE' if passed else 'DROP'}",
+                ok=True,result=result)
+    except Exception as e:
+        set_job("ext_challenger",running=False,progress=100,message=f"❌ {type(e).__name__}: {e}",ok=False)
+
+@app.post("/start-ext-challenger")
+def start_ext_challenger():
+    with LOCK:
+        if JOBS["ext_challenger"]["running"]:
+            return jsonify(JOBS["ext_challenger"])
+    threading.Thread(target=ext_challenger_worker,daemon=True).start()
+    time.sleep(.05)
+    with LOCK:
+        return jsonify(JOBS["ext_challenger"])
 
 
 @app.post("/start-download")
