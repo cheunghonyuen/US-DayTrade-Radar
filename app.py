@@ -22,6 +22,7 @@ from original_engine_parity_audit_v1 import run_original_parity_audit
 from original_v01_tzfixed_replay import run_original_tz_fixed_replay
 from qc_stocks_in_play_benchmark_v1 import run_qc_stocks_in_play_benchmark
 from qc_1min_oos_resolver_v1 import run_qc_1min_oos_resolver
+from backtrader_execution_parity_v1 import run_backtrader_execution_parity
 
 app = Flask(__name__)
 
@@ -74,6 +75,7 @@ JOBS = {
     "orig_tz": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "qc_bench": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "qc_1m": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
+    "bt_parity": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
 }
 
 HTML = """
@@ -348,6 +350,18 @@ th:first-child,td:first-child{text-align:left}
 <div class="track"><div id="qc_1mBar" class="bar"></div></div>
 <div id="qc_1mMsg" class="msg">尚未开始</div>
 <div id="qc_1mResults" class="scroll"></div>
+</div>
+
+<div class="card">
+<h2>22. Backtrader Independent Engine Parity v1</h2>
+<p><b>只验证引擎，不改策略。</b> 20 的选股/入场/止损全部冻结；21 已把 5min 歧义缩到 1min。</p>
+<p class="muted">这一步使用独立的 Backtrader event-driven broker，只重放 21 的 161 笔真正有 execution ambiguity 的 True OOS 交易；其余 1652 笔 strict/delayed 已一致，不浪费时间重复跑。直接复用 /data/daytrade/qc_1min_oos_cache，不重新下载。</p>
+<p class="muted">PASS 条件：Backtrader 汇总后的 True OOS PF&gt;1、AvgR&gt;0，并与 21 的正收益 Lower/Upper 边界一致。失败才查 execution；绝不调策略参数。</p>
+<button id="bt_parityBtn" type="button">Run Backtrader Engine Parity</button>
+<div class="row"><b>Parity 进度</b><span id="bt_parityPct">0%</span></div>
+<div class="track"><div id="bt_parityBar" class="bar"></div></div>
+<div id="bt_parityMsg" class="msg">尚未开始</div>
+<div id="bt_parityResults" class="scroll"></div>
 </div>
 
 <div class="card">
@@ -727,6 +741,22 @@ function renderQC1m(r){
  $("qc_1mResults").innerHTML=h;
 }
 
+
+function renderBTParity(r){
+ if(!r)return;
+ const lo=r.lower_bound_21||{}, hi=r.upper_bound_21||{}, b=r.backtrader_oos||{};
+ const pct=x=>(Number(x||0)*100).toFixed(1);
+ let h=`<p><b>${r.study}</b> · <b>${r.parity_pass?"✅ PASS":"❌ FAIL"}</b></p>`;
+ h+=`<p><b>Engine:</b> ${r.engine} ${r.backtrader_version} · Ambiguous ${r.ambiguous_trades} · resolved ${r.backtrader_resolved} · errors ${r.backtrader_errors}</p>`;
+ h+='<table><thead><tr><th>Result</th><th>Trades</th><th>Win%</th><th>PF</th><th>AvgR</th><th>MedianR</th></tr></thead><tbody>';
+ const row=(n,x)=>`<tr><td>${n}</td><td>${x.trades??0}</td><td>${pct(x.win_rate)}</td><td>${x.profit_factor??0}</td><td>${x.avg_r??0}</td><td>${x.median_r??0}</td></tr>`;
+ h+=row("21 Lower",lo)+row("Backtrader",b)+row("21 Upper",hi);
+ h+='</tbody></table>';
+ h+=`<p><b>Ambiguous trades inside 21 bounds:</b> ${(Number(r.ambiguous_trade_result_inside_21_bounds_share||0)*100).toFixed(1)}%</p>`;
+ h+=`<p><b>Decision:</b> ${r.decision_rule}</p>`;
+ $("bt_parityResults").innerHTML=h;
+}
+
 async function poll(kind){
   try{
     const r=await fetch("/job/"+kind,{cache:"no-store"});
@@ -750,6 +780,7 @@ async function poll(kind){
     if(d.result && kind==="orig_tz") renderOrigTZ(d.result);
     if(d.result && kind==="qc_bench") renderQCBench(d.result);
     if(d.result && kind==="qc_1m") renderQC1m(d.result);
+    if(d.result && kind==="bt_parity") renderBTParity(d.result);
     if(d.data_exists) $("dataState").textContent="✅ Data ready";
     if(d.running) setTimeout(()=>poll(kind),800);
   }catch(e){
@@ -817,7 +848,7 @@ $("autopsyBtn").addEventListener("click", async ()=>{
 $("tournamentBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-tournament",{method:"POST"})).json(); setProgress("tournament",d); poll("tournament"); });
 
 $("od_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-audit",{method:"POST"})).json(); setProgress("od_audit",d); poll("od_audit"); });
-$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); poll("orig_v01"); poll("parity_audit"); poll("orig_tz"); poll("qc_bench"); poll("qc_1m"); });
+$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); poll("orig_v01"); poll("parity_audit"); poll("orig_tz"); poll("qc_bench"); poll("qc_1m"); poll("bt_parity"); });
 $("orb_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-orb-audit",{method:"POST"})).json(); setProgress("orb_audit",d); poll("orb_audit"); });
 $("fp_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-fp-audit",{method:"POST"})).json(); setProgress("fp_audit",d); poll("fp_audit"); });
 $("mc_trialBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-mc-trial",{method:"POST"})).json(); setProgress("mc_trial",d); poll("mc_trial"); });
@@ -826,6 +857,7 @@ $("parity_auditBtn").addEventListener("click", async ()=>{ const d=await (await 
 $("orig_tzBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-orig-tz",{method:"POST"})).json(); setProgress("orig_tz",d); poll("orig_tz"); });
 $("qc_benchBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-qc-bench",{method:"POST"})).json(); setProgress("qc_bench",d); poll("qc_bench"); });
 $("qc_1mBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-qc-1m",{method:"POST"})).json(); setProgress("qc_1m",d); poll("qc_1m"); });
+$("bt_parityBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-bt-parity",{method:"POST"})).json(); setProgress("bt_parity",d); poll("bt_parity"); });
 
 $("rescanBtn").addEventListener("click", async ()=>{
   try{
@@ -1023,8 +1055,8 @@ def preflight():
     elif str(DATA_ROOT).startswith("/data"):
         checks.append("OK storage path is /data (persistent if Railway Volume is mounted)")
     try:
-        import numpy, requests
-        checks.append("OK python dependencies")
+        import numpy, requests, backtrader
+        checks.append(f"OK python dependencies · backtrader {getattr(backtrader,'__version__','unknown')}")
     except Exception as e:
         checks.append(f"FAIL dependencies: {e}")
         ok=False
@@ -1836,6 +1868,29 @@ def start_qc_1m():
     time.sleep(.05)
     with LOCK:
         return jsonify(JOBS["qc_1m"])
+
+
+
+def bt_parity_worker():
+    try:
+        def cb(pct,msg): set_job("bt_parity",running=True,progress=int(pct),message=msg,ok=None)
+        set_job("bt_parity",running=True,progress=1,message="读取21已缓存的1min ambiguity；不下载、不调参数…",ok=None,result=None)
+        result=run_backtrader_execution_parity(progress_cb=cb)
+        set_job("bt_parity",running=False,progress=100,
+                message=f"✅ Backtrader Parity 完成 · PF {result['backtrader_oos']['profit_factor']} · {'PASS' if result['parity_pass'] else 'FAIL'}",
+                ok=True,result=result)
+    except Exception as e:
+        set_job("bt_parity",running=False,progress=100,message=f"❌ {type(e).__name__}: {e}",ok=False)
+
+@app.post("/start-bt-parity")
+def start_bt_parity():
+    with LOCK:
+        if JOBS["bt_parity"]["running"]:
+            return jsonify(JOBS["bt_parity"])
+    threading.Thread(target=bt_parity_worker,daemon=True).start()
+    time.sleep(.05)
+    with LOCK:
+        return jsonify(JOBS["bt_parity"])
 
 
 @app.post("/start-download")
