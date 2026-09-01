@@ -17,6 +17,7 @@ from opening_drive_decision_v1 import run_opening_drive_decision
 from orb_frozen_audit_v1 import run_orb_frozen_audit
 from first_pullback_frozen_audit_v1 import run_first_pullback_frozen_audit
 from momentum_continuation_final_trial_v1 import run_momentum_continuation_final_trial
+from exact_original_v01_replay import run_exact_original_v01
 
 app = Flask(__name__)
 
@@ -64,6 +65,7 @@ JOBS = {
     "orb_audit": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "fp_audit": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "mc_trial": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
+    "orig_v01": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
 }
 
 HTML = """
@@ -71,7 +73,7 @@ HTML = """
 <html lang="zh">
 <head>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>US DayTrade Radar · Momentum Continuation Final Trial</title>
+<title>US DayTrade Radar · Exact Original MVP v0.1 Replay</title>
 <style>
 body{font-family:-apple-system,BlinkMacSystemFont,Arial,sans-serif;background:#f4f6f8;margin:0;padding:16px;color:#111}
 .wrap{max-width:900px;margin:auto}
@@ -100,7 +102,7 @@ th:first-child,td:first-child{text-align:left}
 </head>
 <body>
 <div class="wrap">
-<h1>🇺🇸 US DayTrade Radar <small>Momentum Continuation Final Trial v1</small></h1>
+<h1>🇺🇸 US DayTrade Radar <small>Exact Original MVP v0.1 Replay</small></h1>
 
 <div class="card">
 <h2>1. Preflight</h2>
@@ -278,6 +280,18 @@ th:first-child,td:first-child{text-align:left}
 <div class="track"><div id="mc_trialBar" class="bar"></div></div>
 <div id="mc_trialMsg" class="msg">尚未开始</div>
 <div id="mc_trialResults" class="scroll"></div>
+</div>
+
+<div class="card">
+<h2>17. Exact Original MVP v0.1 Replay</h2>
+<p><b>这次不改模型。</b> 直接使用我们保存的 <code>US_DayTrade_MVP_v0.1.zip</code> 里的原始 <code>src/engine.py</code> + 原始 <code>config.json</code>。</p>
+<p class="muted">原始规则：Gap 3%-20% / RVOL ≥1.2 / OR20 / 10:00-11:30 entry / 0.5×OR stop / 1.5R target / 15:50 EOD / $0.01 slippage / $0.005 commission。没有 VWAP、DNA、Filter Ladder、Frozen Gate、Tournament 或后来任何改动。</p>
+<p class="muted">直接在现在同一批 125 Stocks-in-Play 的 Discovery + True OOS 两个时间段上跑，正面对比泛化能力。</p>
+<button id="orig_v01Btn" type="button">Run Exact Original MVP v0.1</button>
+<div class="row"><b>Original Replay 进度</b><span id="orig_v01Pct">0%</span></div>
+<div class="track"><div id="orig_v01Bar" class="bar"></div></div>
+<div id="orig_v01Msg" class="msg">尚未开始</div>
+<div id="orig_v01Results" class="scroll"></div>
 </div>
 
 <div class="card">
@@ -562,6 +576,21 @@ function renderMCTrial(r){
  $("mc_trialResults").innerHTML=h;
 }
 
+
+function renderOrigV01(r){
+ if(!r)return;
+ const d=r.discovery||{},o=r.true_oos||{};
+ const pct=x=>(Number(x||0)*100).toFixed(1);
+ let h=`<p><b>${r.study}</b></p><p><b>Source:</b> ${r.source}</p>`;
+ h+=`<p><b>Mode:</b> ${r.engine_mode}</p>`;
+ h+='<table><thead><tr><th>Period</th><th>Trades</th><th>Win%</th><th>PF</th><th>Avg R</th><th>MaxDD%</th><th>Net PnL</th><th>Stop%</th><th>Target%</th></tr></thead><tbody>';
+ h+=`<tr><td>Discovery</td><td>${d.trades??"—"}</td><td>${pct(d.win_rate)}</td><td>${d.profit_factor??"—"}</td><td>${d.avg_r??"—"}</td><td>${d.max_drawdown_pct??"—"}</td><td>${d.net_pnl??"—"}</td><td>${pct(d.stop_rate)}</td><td>${pct(d.target_rate)}</td></tr>`;
+ h+=`<tr><td>True OOS</td><td>${o.trades??"—"}</td><td>${pct(o.win_rate)}</td><td>${o.profit_factor??"—"}</td><td>${o.avg_r??"—"}</td><td>${o.max_drawdown_pct??"—"}</td><td>${o.net_pnl??"—"}</td><td>${pct(o.stop_rate)}</td><td>${pct(o.target_rate)}</td></tr>`;
+ h+='</tbody></table>';
+ h+=`<p>${r.comparison_note}</p><p><b>Interpretation:</b> ${r.interpretation}</p>`;
+ $("orig_v01Results").innerHTML=h;
+}
+
 async function poll(kind){
   try{
     const r=await fetch("/job/"+kind,{cache:"no-store"});
@@ -580,6 +609,7 @@ async function poll(kind){
     if(d.result && kind==="orb_audit") renderORBAudit(d.result);
     if(d.result && kind==="fp_audit") renderFPAudit(d.result);
     if(d.result && kind==="mc_trial") renderMCTrial(d.result);
+    if(d.result && kind==="orig_v01") renderOrigV01(d.result);
     if(d.data_exists) $("dataState").textContent="✅ Data ready";
     if(d.running) setTimeout(()=>poll(kind),800);
   }catch(e){
@@ -647,10 +677,11 @@ $("autopsyBtn").addEventListener("click", async ()=>{
 $("tournamentBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-tournament",{method:"POST"})).json(); setProgress("tournament",d); poll("tournament"); });
 
 $("od_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-audit",{method:"POST"})).json(); setProgress("od_audit",d); poll("od_audit"); });
-$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); });
+$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); poll("orig_v01"); });
 $("orb_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-orb-audit",{method:"POST"})).json(); setProgress("orb_audit",d); poll("orb_audit"); });
 $("fp_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-fp-audit",{method:"POST"})).json(); setProgress("fp_audit",d); poll("fp_audit"); });
 $("mc_trialBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-mc-trial",{method:"POST"})).json(); setProgress("mc_trial",d); poll("mc_trial"); });
+$("orig_v01Btn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-orig-v01",{method:"POST"})).json(); setProgress("orig_v01",d); poll("orig_v01"); });
 
 $("rescanBtn").addEventListener("click", async ()=>{
   try{
@@ -1470,6 +1501,51 @@ def start_mc_trial():
     time.sleep(.05)
     with LOCK:
         return jsonify(JOBS["mc_trial"])
+
+
+
+def orig_v01_worker():
+    if not SIP_DATA.exists() or not OOS_DATA.exists():
+        set_job(
+            "orig_v01", running=False, progress=100,
+            message="❌ 缺少现有 Discovery / True OOS Persistent Replay。不要重新下载；先 Run Preflight。",
+            ok=False
+        )
+        return
+    try:
+        def cb(pct, msg):
+            set_job("orig_v01", running=True, progress=int(pct), message=msg, ok=None)
+
+        set_job(
+            "orig_v01", running=True, progress=2,
+            message="加载 preserved MVP v0.1 原始 engine + 原始 config；不使用后续改动…",
+            ok=None, result=None
+        )
+        result = run_exact_original_v01(
+            str(SIP_DATA), str(OOS_DATA),
+            str(OUT / "exact_original_v01_replay"),
+            progress_cb=cb
+        )
+        set_job(
+            "orig_v01", running=False, progress=100,
+            message="✅ Exact Original MVP v0.1 Replay 完成",
+            ok=True, result=result
+        )
+    except Exception as e:
+        set_job(
+            "orig_v01", running=False, progress=100,
+            message=f"❌ {type(e).__name__}: {e}", ok=False
+        )
+
+@app.post("/start-orig-v01")
+def start_orig_v01():
+    with LOCK:
+        if JOBS["orig_v01"]["running"]:
+            return jsonify(JOBS["orig_v01"])
+    threading.Thread(target=orig_v01_worker, daemon=True).start()
+    time.sleep(.05)
+    with LOCK:
+        return jsonify(JOBS["orig_v01"])
 
 
 @app.post("/start-download")

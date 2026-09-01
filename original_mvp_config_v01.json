@@ -1,0 +1,16 @@
+{
+  "starting_equity": 100000,
+  "risk_per_trade_pct": 0.005,
+  "min_gap_pct": 0.03,
+  "max_gap_pct": 0.2,
+  "min_rvol": 1.2,
+  "opening_range_minutes": 20,
+  "entry_start": "10:00",
+  "entry_end": "11:30",
+  "eod_exit": "15:50",
+  "target_r": 1.5,
+  "stop_range_fraction": 0.5,
+  "slippage_per_share": 0.01,
+  "commission_per_share": 0.005,
+  "max_trades_per_symbol_per_day": 1
+}
