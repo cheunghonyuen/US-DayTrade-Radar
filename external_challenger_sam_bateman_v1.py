@@ -8,8 +8,8 @@ import pandas as pd
 DATA_ROOT = Path("/data/daytrade")
 DISCOVERY = DATA_ROOT / "sip_data.csv"
 OOS_CANDIDATES = [
-    DATA_ROOT / "oos_v08" / "sip_data.csv",
-    DATA_ROOT / "oos_data.csv",
+    # Exact persistent True OOS path already used by app.py / V0.8 / setup tournament / QC benchmark.
+    DATA_ROOT / "oos_v08" / "sip_oos_2024-08-30_2025-08-29.csv",
 ]
 OUTDIR = DATA_ROOT / "external_challenger_sam_bateman_v1"
 
@@ -40,15 +40,35 @@ SPEC = {
 REQ = {"symbol","timestamp","open","high","low","close","volume"}
 
 def _locate_oos():
-    for p in OOS_CANDIDATES:
-        if p.exists():
-            return p
-    hits = list(DATA_ROOT.rglob("sip_data.csv"))
-    # Prefer paths containing oos, exclude discovery root.
-    hits = [p for p in hits if p != DISCOVERY and "oos" in str(p).lower()]
-    if hits:
-        return sorted(hits, key=lambda p: len(str(p)))[0]
-    raise FileNotFoundError("True OOS sip_data.csv not found")
+    p = OOS_CANDIDATES[0]
+    if not p.exists():
+        raise FileNotFoundError(
+            f"Exact True OOS persistent replay missing: {p}. "
+            "Do not redownload or guess another path; run dashboard Preflight to verify the mounted volume."
+        )
+    return p
+
+def _manifest_probe(path, label):
+    p = Path(path)
+    info = {
+        "label": label,
+        "path": str(p),
+        "exists": p.exists(),
+        "size_mb": round(p.stat().st_size / 1024 / 1024, 2) if p.exists() else 0.0,
+    }
+    if not p.exists():
+        return info
+    probe = pd.read_csv(p, nrows=5000)
+    info["columns"] = list(probe.columns)
+    info["required_columns_ok"] = bool(REQ.issubset(set(probe.columns)))
+    if "symbol" in probe.columns:
+        info["sample_symbols"] = int(probe["symbol"].astype(str).nunique())
+    if "timestamp" in probe.columns:
+        ts = pd.to_datetime(probe["timestamp"], errors="coerce", utc=True)
+        info["sample_timestamp_min"] = str(ts.min())
+        info["sample_timestamp_max"] = str(ts.max())
+        info["invalid_timestamp_sample"] = int(ts.isna().sum())
+    return info
 
 def _prepare(path, label):
     x = pd.read_csv(path)
@@ -328,11 +348,24 @@ def _run_period(path,label,progress_cb,p0,p1):
 
 def run_external_challenger(progress_cb=None):
     if not DISCOVERY.exists():
-        raise FileNotFoundError("Discovery sip_data.csv missing")
+        raise FileNotFoundError(f"Discovery persistent replay missing: {DISCOVERY}")
     oos=_locate_oos()
     OUTDIR.mkdir(parents=True,exist_ok=True)
 
-    if progress_cb: progress_cb(1,"Source-locked sam-bateman/trading-orb challenger · no tuning")
+    manifest = {
+        "discovery": _manifest_probe(DISCOVERY, "Discovery"),
+        "true_oos": _manifest_probe(oos, "True OOS"),
+    }
+    for k, v in manifest.items():
+        if not v.get("exists") or not v.get("required_columns_ok"):
+            raise ValueError(f"{k} manifest/schema preflight failed: {v}")
+
+    if progress_cb:
+        progress_cb(
+            1,
+            f"Data Manifest PASS · D {manifest['discovery']['size_mb']} MB · "
+            f"OOS {manifest['true_oos']['size_mb']} MB · source-locked, no tuning"
+        )
     dx,ds,dt=_run_period(DISCOVERY,"Discovery",progress_cb,2,45)
     ox,osig,ot=_run_period(oos,"True OOS",progress_cb,47,90)
 
@@ -341,6 +374,7 @@ def run_external_challenger(progress_cb=None):
 
     result={
         "study":"External Challenger #1 · sam-bateman/trading-orb v1",
+        "data_manifest": manifest,
         "source_locked_spec":SPEC,
         "fidelity":{
             "matched":["OR20","breakout-bar close signal","RVOL >=1.2 at same time bucket rolling20",
