@@ -35,6 +35,7 @@ from alpaca_macd_source_parity_audit_v1 import run_alpaca_macd_source_parity
 from alpaca_momentum_source_locked_v2 import run_alpaca_momentum_source_locked_v2
 from external_challenger3_vwap_mean_reversion_v1 import run_external_challenger3
 from historical_depth_preflight_v1 import run_historical_depth_preflight, run_historical_depth_build
+from pairs_walkforward_v1 import run_pairs_walkforward
 
 app = Flask(__name__)
 
@@ -101,6 +102,7 @@ JOBS = {
     "challenger3": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "hist_pre": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "hist_build": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
+    "pairs_wf": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
 }
 
 HTML = """
@@ -139,6 +141,18 @@ th:first-child,td:first-child{text-align:left}
 <div class="wrap">
 <h1>🇺🇸 US DayTrade Radar <small>Original Engine Parity Audit v1</small></h1>
 
+<div class="card">
+<h2>35. Walk-Forward Pairs / Statistical Arbitrage v1</h2>
+<p><b>用34建立的5+年daily formation cache做真正rolling walk-forward。</b> 26 Frozen Forward完全不动。</p>
+<p class="muted">每个fold：252交易日formation → correlation只做预筛 → Engle-Granger cointegration(p≤0.10) → 最多10对 → 63交易日完全未来test → 每63日滚动。Pair selection、OLS hedge ratio、spread mean/std全部只在formation做。</p>
+<p class="muted">交易规则冻结：Entry |z|≥2.0 / Exit |z|≤0.5 / Stop |z|≥3.0；test PnL使用lagged position，统一5bps round-trip cost。不会拿test结果反过来调pair或阈值。</p>
+<p class="muted"><b>透明限制：</b>原严谨实现通常在sector bucket内筛pair；我们暂时没有sector metadata，所以这里先用formation returns correlation做top-150预筛以控制multiple testing，再做cointegration。这是research-grade walk-forward，不冒充原repo逐行exact parity。</p>
+<button id="pairs_wfBtn">Run Pairs Walk-Forward</button>
+<div class="row"><b>Pairs WF</b><span id="pairs_wfPct">0%</span></div>
+<div class="track"><div id="pairs_wfBar" class="bar"></div></div>
+<div id="pairs_wfMsg" class="msg">尚未开始</div>
+<div id="pairs_wfResults" class="scroll"></div>
+</div>
 <div class="card">
 <h2>34. Historical Depth / Universe Expansion v1</h2>
 <p><b>先补 formation history，不调策略。</b> 为 Pairs / Regime / Walk-Forward / 更大 Universe 准备5+年日线；26 Frozen Forward完全不动。</p>
@@ -1133,6 +1147,23 @@ function renderHistBuild(r){
  h+=`<p>${r.next_use||""}</p>`; $("hist_buildResults").innerHTML=h;
 }
 
+
+function renderPairsWF(r){
+ if(!r)return;
+ const o=r.overall||{}, b=r.bootstrap||{};
+ const pct=x=>(Number(x||0)*100).toFixed(1);
+ let h=`<p><b>${r.study}</b></p>`;
+ h+=`<p>${r.data?.symbols??0} symbols · ${r.data?.dates??0} dates · ${r.fold_count??0} folds · positive PF folds ${r.positive_pf_folds??0}</p>`;
+ h+='<table><thead><tr><th>Trades</th><th>Win%</th><th>PF</th><th>AvgTrade%</th><th>Sharpe</th><th>MaxDD%</th><th>Net%</th></tr></thead><tbody>';
+ h+=`<tr><td>${o.trades??0}</td><td>${pct(o.win_rate)}</td><td>${o.profit_factor??0}</td><td>${o.avg_trade_pct??0}</td><td>${o.sharpe??0}</td><td>${o.max_dd_pct??0}</td><td>${o.net_return_pct??0}</td></tr></tbody></table>`;
+ h+=`<p><b>Bootstrap:</b> P(PF&gt;1) ${pct(b.prob_pf_gt1)} · PF95% [${(b.pf_ci95||[]).join(", ")}] · P(avg trade&gt;0) ${pct(b.prob_avg_trade_gt0)}</p>`;
+ h+='<h3>Fold Summary</h3><table><thead><tr><th>#</th><th>Test</th><th>Pairs</th><th>Trades</th><th>PF</th><th>Sharpe</th><th>Net%</th></tr></thead><tbody>';
+ (r.folds||[]).slice().reverse().forEach(x=>h+=`<tr><td>${x.fold}</td><td>${x.test_start}→${x.test_end}</td><td>${x.pairs_selected}</td><td>${x.trades}</td><td>${x.profit_factor}</td><td>${x.sharpe}</td><td>${x.net_return_pct}</td></tr>`);
+ h+='</tbody></table>';
+ h+=`<p><b>Method:</b> ${r.method_note||""}</p><p><b>Decision:</b> ${r.decision_rule||""}</p>`;
+ $("pairs_wfResults").innerHTML=h;
+}
+
 async function poll(kind){
   try{
     const r=await fetch("/job/"+kind,{cache:"no-store"});
@@ -1170,6 +1201,7 @@ async function poll(kind){
     if(d.result && kind==="challenger3") renderChallenger3(d.result);
     if(d.result && kind==="hist_pre") renderHistPre(d.result);
     if(d.result && kind==="hist_build") renderHistBuild(d.result);
+    if(d.result && kind==="pairs_wf") renderPairsWF(d.result);
     if(d.data_exists) $("dataState").textContent="✅ Data ready";
     if(d.running) setTimeout(()=>poll(kind),800);
   }catch(e){
@@ -1237,7 +1269,7 @@ $("autopsyBtn").addEventListener("click", async ()=>{
 $("tournamentBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-tournament",{method:"POST"})).json(); setProgress("tournament",d); poll("tournament"); });
 
 $("od_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-audit",{method:"POST"})).json(); setProgress("od_audit",d); poll("od_audit"); });
-$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); poll("orig_v01"); poll("parity_audit"); poll("orig_tz"); poll("qc_bench"); poll("qc_1m"); poll("bt_parity"); poll("bt_parity_v2"); poll("trade_parity"); poll("entry_truth"); poll("paper_fwd"); poll("command_center"); poll("ext_challenger"); poll("alpaca_mom"); poll("alpaca_funnel"); poll("alpaca_macd_parity"); poll("alpaca_v2"); poll("challenger3"); poll("hist_pre"); poll("hist_build"); });
+$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); poll("orig_v01"); poll("parity_audit"); poll("orig_tz"); poll("qc_bench"); poll("qc_1m"); poll("bt_parity"); poll("bt_parity_v2"); poll("trade_parity"); poll("entry_truth"); poll("paper_fwd"); poll("command_center"); poll("ext_challenger"); poll("alpaca_mom"); poll("alpaca_funnel"); poll("alpaca_macd_parity"); poll("alpaca_v2"); poll("challenger3"); poll("hist_pre"); poll("hist_build"); poll("pairs_wf"); });
 $("orb_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-orb-audit",{method:"POST"})).json(); setProgress("orb_audit",d); poll("orb_audit"); });
 $("fp_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-fp-audit",{method:"POST"})).json(); setProgress("fp_audit",d); poll("fp_audit"); });
 $("mc_trialBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-mc-trial",{method:"POST"})).json(); setProgress("mc_trial",d); poll("mc_trial"); });
@@ -1260,6 +1292,7 @@ $("alpaca_v2Btn").addEventListener("click", async ()=>{ const d=await (await fet
 $("challenger3Btn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-challenger3",{method:"POST"})).json(); setProgress("challenger3",d); poll("challenger3"); });
 $("hist_preBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-hist-pre",{method:"POST"})).json(); setProgress("hist_pre",d); poll("hist_pre"); });
 $("hist_buildBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-hist-build",{method:"POST"})).json(); setProgress("hist_build",d); poll("hist_build"); });
+$("pairs_wfBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-pairs-wf",{method:"POST"})).json(); setProgress("pairs_wf",d); poll("pairs_wf"); });
 
 $("rescanBtn").addEventListener("click", async ()=>{
   try{
@@ -2585,6 +2618,26 @@ def start_hist_build():
         if JOBS["hist_build"]["running"]: return jsonify(JOBS["hist_build"])
     threading.Thread(target=hist_build_worker,daemon=True).start(); time.sleep(.05)
     with LOCK:return jsonify(JOBS["hist_build"])
+
+
+
+def pairs_wf_worker():
+    try:
+        def cb(p,m): set_job("pairs_wf",running=True,progress=int(p),message=m,ok=None)
+        set_job("pairs_wf",running=True,progress=1,message="Pairs walk-forward：252d formation / 63d test；no rescue tuning…",ok=None,result=None)
+        r=run_pairs_walkforward(progress_cb=cb)
+        o=r["overall"]; b=r["bootstrap"]
+        passed=(o["profit_factor"]>1 and o["avg_trade_pct"]>0 and o["sharpe"]>0 and b.get("prob_pf_gt1",0)>=0.8 and r["positive_pf_folds"]>=math.ceil(0.6*r["fold_count"]))
+        set_job("pairs_wf",running=False,progress=100,message=f"✅ Pairs WF · {o['trades']} trades · PF {o['profit_factor']} · Sharpe {o['sharpe']} · {'PROMOTE' if passed else 'DROP/RESEARCH'}",ok=True,result=r)
+    except Exception as e:
+        set_job("pairs_wf",running=False,progress=100,message=f"❌ {type(e).__name__}: {e}",ok=False)
+
+@app.post("/start-pairs-wf")
+def start_pairs_wf():
+    with LOCK:
+        if JOBS["pairs_wf"]["running"]: return jsonify(JOBS["pairs_wf"])
+    threading.Thread(target=pairs_wf_worker,daemon=True).start(); time.sleep(.05)
+    with LOCK:return jsonify(JOBS["pairs_wf"])
 
 
 @app.post("/start-download")
