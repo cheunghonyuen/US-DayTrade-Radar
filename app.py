@@ -15,6 +15,7 @@ from setup_tournament_v1 import run_setup_tournament
 from opening_drive_audit_v1 import run_opening_drive_audit
 from opening_drive_decision_v1 import run_opening_drive_decision
 from orb_frozen_audit_v1 import run_orb_frozen_audit
+from first_pullback_frozen_audit_v1 import run_first_pullback_frozen_audit
 
 app = Flask(__name__)
 
@@ -60,6 +61,7 @@ JOBS = {
     "od_audit": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "od_decision": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "orb_audit": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
+    "fp_audit": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
 }
 
 HTML = """
@@ -67,7 +69,7 @@ HTML = """
 <html lang="zh">
 <head>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>US DayTrade Radar · ORB Frozen Audit</title>
+<title>US DayTrade Radar · First Pullback Frozen Audit</title>
 <style>
 body{font-family:-apple-system,BlinkMacSystemFont,Arial,sans-serif;background:#f4f6f8;margin:0;padding:16px;color:#111}
 .wrap{max-width:900px;margin:auto}
@@ -96,7 +98,7 @@ th:first-child,td:first-child{text-align:left}
 </head>
 <body>
 <div class="wrap">
-<h1>🇺🇸 US DayTrade Radar <small>ORB Frozen Audit v1</small></h1>
+<h1>🇺🇸 US DayTrade Radar <small>First Pullback Frozen Audit v1</small></h1>
 
 <div class="card">
 <h2>1. Preflight</h2>
@@ -251,6 +253,17 @@ th:first-child,td:first-child{text-align:left}
 <div class="track"><div id="orb_auditBar" class="bar"></div></div>
 <div id="orb_auditMsg" class="msg">尚未开始</div>
 <div id="orb_auditResults" class="scroll"></div>
+</div>
+
+<div class="card">
+<h2>15. First Pullback Frozen Audit v1</h2>
+<p><b>生死审判：</b>只审计 Tournament 已保存的 First Pullback trades。</p>
+<p class="muted">不调参数，不重新下载，不重跑 Replay。检查 True OOS PF、AvgR、MaxDD(R)、H1/H2、Winner Concentration、3000次 Bootstrap。只有 AUDIT_PASS 才进入 Paper Trading，否则 DROP。</p>
+<button id="fp_auditBtn" type="button">Run First Pullback Frozen Audit</button>
+<div class="row"><b>Audit 进度</b><span id="fp_auditPct">0%</span></div>
+<div class="track"><div id="fp_auditBar" class="bar"></div></div>
+<div id="fp_auditMsg" class="msg">尚未开始</div>
+<div id="fp_auditResults" class="scroll"></div>
 </div>
 
 <div class="card">
@@ -501,6 +514,23 @@ function renderORBAudit(r){
  $("orb_auditResults").innerHTML=h;
 }
 
+
+function renderFPAudit(r){
+ if(!r)return;
+ const d=r.discovery||{},o=r.oos||{},c=r.oos_winner_concentration||{},b=r.oos_bootstrap||{};
+ let h=`<p><b>${r.study}</b> · <b>${r.verdict}</b> · ${r.checks_passed}/${r.checks_total}</p>`;
+ h+=`<p><b>Decision:</b> ${r.decision}</p>`;
+ h+=`<p><b>Discovery:</b> ${d.trades} trades · PF ${d.profit_factor} · AvgR ${d.avg_r} · MaxDD ${d.max_dd_r}R</p>`;
+ h+=`<p><b>True OOS:</b> ${o.trades} trades · PF ${o.profit_factor} · AvgR ${o.avg_r} · MaxDD ${o.max_dd_r}R · Win ${(Number(o.win_rate||0)*100).toFixed(1)}%</p>`;
+ h+=`<p><b>OOS Top5 winner share:</b> ${(Number(c.top5_share||0)*100).toFixed(1)}% · <b>P(PF>1):</b> ${(Number(b.prob_pf_gt1||0)*100).toFixed(1)}%</p>`;
+ h+='<h3>OOS H1/H2</h3><table><thead><tr><th>Half</th><th>Trades</th><th>PF</th><th>AvgR</th><th>MaxDD(R)</th></tr></thead><tbody>';
+ (r.oos_halves||[]).forEach(x=>h+=`<tr><td>${x.half}</td><td>${x.trades}</td><td>${x.profit_factor}</td><td>${x.avg_r}</td><td>${x.max_dd_r}</td></tr>`);
+ h+='</tbody></table><h3>Checks</h3><table><tbody>';
+ Object.entries(r.checks||{}).forEach(([k,v])=>h+=`<tr><td>${k}</td><td><b>${v?"✅ PASS":"❌ FAIL"}</b></td></tr>`);
+ h+='</tbody></table>';
+ $("fp_auditResults").innerHTML=h;
+}
+
 async function poll(kind){
   try{
     const r=await fetch("/job/"+kind,{cache:"no-store"});
@@ -517,6 +547,7 @@ async function poll(kind){
     if(d.result && kind==="od_audit") renderODAudit(d.result);
     if(d.result && kind==="od_decision") renderODDecision(d.result);
     if(d.result && kind==="orb_audit") renderORBAudit(d.result);
+    if(d.result && kind==="fp_audit") renderFPAudit(d.result);
     if(d.data_exists) $("dataState").textContent="✅ Data ready";
     if(d.running) setTimeout(()=>poll(kind),800);
   }catch(e){
@@ -584,8 +615,9 @@ $("autopsyBtn").addEventListener("click", async ()=>{
 $("tournamentBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-tournament",{method:"POST"})).json(); setProgress("tournament",d); poll("tournament"); });
 
 $("od_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-audit",{method:"POST"})).json(); setProgress("od_audit",d); poll("od_audit"); });
-$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); });
+$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); });
 $("orb_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-orb-audit",{method:"POST"})).json(); setProgress("orb_audit",d); poll("orb_audit"); });
+$("fp_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-fp-audit",{method:"POST"})).json(); setProgress("fp_audit",d); poll("fp_audit"); });
 
 $("rescanBtn").addEventListener("click", async ()=>{
   try{
@@ -1304,6 +1336,58 @@ def start_orb_audit():
         if JOBS["orb_audit"]["running"]: return jsonify(JOBS["orb_audit"])
     threading.Thread(target=orb_audit_worker,daemon=True).start(); time.sleep(.05)
     with LOCK:return jsonify(JOBS["orb_audit"])
+
+
+
+def fp_audit_worker():
+    tdir = OUT / "setup_tournament_v1"
+    dpath = tdir / "first_pullback_discovery.csv"
+    opath = tdir / "first_pullback_oos.csv"
+
+    if not dpath.exists() or not opath.exists():
+        set_job(
+            "fp_audit", running=False, progress=100,
+            message="❌ 找不到 Tournament First Pullback trade files。先跑 Setup Tournament v1；不要重新下载。",
+            ok=False
+        )
+        return
+
+    try:
+        def cb(pct, msg):
+            set_job("fp_audit", running=True, progress=int(pct), message=msg, ok=None)
+
+        set_job(
+            "fp_audit", running=True, progress=2,
+            message="读取 frozen First Pullback trades…", ok=None, result=None
+        )
+
+        result = run_first_pullback_frozen_audit(
+            str(dpath), str(opath),
+            str(tdir / "first_pullback_frozen_audit_v1"),
+            progress_cb=cb
+        )
+
+        set_job(
+            "fp_audit", running=False, progress=100,
+            message=f"✅ First Pullback Frozen Audit：{result['verdict']} → {result['decision']}",
+            ok=True, result=result
+        )
+
+    except Exception as e:
+        set_job(
+            "fp_audit", running=False, progress=100,
+            message=f"❌ {type(e).__name__}: {e}", ok=False
+        )
+
+@app.post("/start-fp-audit")
+def start_fp_audit():
+    with LOCK:
+        if JOBS["fp_audit"]["running"]:
+            return jsonify(JOBS["fp_audit"])
+    threading.Thread(target=fp_audit_worker, daemon=True).start()
+    time.sleep(.05)
+    with LOCK:
+        return jsonify(JOBS["fp_audit"])
 
 
 @app.post("/start-download")
