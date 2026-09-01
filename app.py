@@ -18,6 +18,7 @@ from orb_frozen_audit_v1 import run_orb_frozen_audit
 from first_pullback_frozen_audit_v1 import run_first_pullback_frozen_audit
 from momentum_continuation_final_trial_v1 import run_momentum_continuation_final_trial
 from exact_original_v01_replay import run_exact_original_v01
+from original_engine_parity_audit_v1 import run_original_parity_audit
 
 app = Flask(__name__)
 
@@ -66,6 +67,7 @@ JOBS = {
     "fp_audit": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "mc_trial": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "orig_v01": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
+    "parity_audit": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
 }
 
 HTML = """
@@ -73,7 +75,7 @@ HTML = """
 <html lang="zh">
 <head>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>US DayTrade Radar · Exact Original MVP v0.1 Replay</title>
+<title>US DayTrade Radar · Original Engine Parity Audit</title>
 <style>
 body{font-family:-apple-system,BlinkMacSystemFont,Arial,sans-serif;background:#f4f6f8;margin:0;padding:16px;color:#111}
 .wrap{max-width:900px;margin:auto}
@@ -102,7 +104,7 @@ th:first-child,td:first-child{text-align:left}
 </head>
 <body>
 <div class="wrap">
-<h1>🇺🇸 US DayTrade Radar <small>Exact Original MVP v0.1 Replay</small></h1>
+<h1>🇺🇸 US DayTrade Radar <small>Original Engine Parity Audit v1</small></h1>
 
 <div class="card">
 <h2>1. Preflight</h2>
@@ -292,6 +294,18 @@ th:first-child,td:first-child{text-align:left}
 <div class="track"><div id="orig_v01Bar" class="bar"></div></div>
 <div id="orig_v01Msg" class="msg">尚未开始</div>
 <div id="orig_v01Results" class="scroll"></div>
+</div>
+
+<div class="card">
+<h2>18. Original Engine Parity Audit v1</h2>
+<p><b>目的：</b>解释为什么 Exact Original MVP v0.1 出现 0 Trades。</p>
+<p class="muted">不调任何模型参数。只检查输入兼容：timestamp 明确按 UTC 解析后转换到 America/New_York，再逐层统计 Regular Session → Prev Close → Gap 3%-20% → OR20 → Entry Window → Breakout → RVOL。</p>
+<p class="muted">这一步不会重新下载数据，也不会重新优化模型。只要 funnel 恢复为非零，就证明前一次 0 Trades 属于 parity/time handling 问题，而不是模型表现结论。</p>
+<button id="parity_auditBtn" type="button">Run Original Engine Parity Audit</button>
+<div class="row"><b>Parity Audit 进度</b><span id="parity_auditPct">0%</span></div>
+<div class="track"><div id="parity_auditBar" class="bar"></div></div>
+<div id="parity_auditMsg" class="msg">尚未开始</div>
+<div id="parity_auditResults" class="scroll"></div>
 </div>
 
 <div class="card">
@@ -591,6 +605,33 @@ function renderOrigV01(r){
  $("orig_v01Results").innerHTML=h;
 }
 
+
+function renderParityAudit(r){
+ if(!r)return;
+ const d=r.discovery||{},o=r.true_oos||{};
+ const df=d.funnel||{},of=o.funnel||{};
+ let h=`<p><b>${r.study}</b></p>`;
+ h+=`<p><b>Timezone:</b> ${r.timezone_assumption}</p>`;
+ h+='<table><thead><tr><th>Stage</th><th>Discovery</th><th>True OOS</th></tr></thead><tbody>';
+ const rows=[
+  ["Raw rows",d.raw_rows,o.raw_rows],
+  ["Regular session rows",d.regular_session_rows_after_tz_fix,o.regular_session_rows_after_tz_fix],
+  ["Sessions total",df.sessions_total,of.sessions_total],
+  ["Prev close",df.prev_close_available,of.prev_close_available],
+  ["Gap 3%-20%",df.gap_3_to_20_pass,of.gap_3_to_20_pass],
+  ["OR20 valid",df.or20_valid,of.or20_valid],
+  ["Entry window bars",df.entry_window_has_bars,of.entry_window_has_bars],
+  ["Breakout",df.breakout_pass,of.breakout_pass],
+  ["RVOL diagnostic",df.rvol_diag_pass,of.rvol_diag_pass]
+ ];
+ rows.forEach(x=>h+=`<tr><td>${x[0]}</td><td>${x[1]??"—"}</td><td>${x[2]??"—"}</td></tr>`);
+ h+='</tbody></table>';
+ h+=`<p><b>Discovery NY time:</b> ${(d.time_distribution||{}).min_time||"—"} → ${(d.time_distribution||{}).max_time||"—"}</p>`;
+ h+=`<p><b>True OOS NY time:</b> ${(o.time_distribution||{}).min_time||"—"} → ${(o.time_distribution||{}).max_time||"—"}</p>`;
+ h+=`<p>${r.decision_rule}</p>`;
+ $("parity_auditResults").innerHTML=h;
+}
+
 async function poll(kind){
   try{
     const r=await fetch("/job/"+kind,{cache:"no-store"});
@@ -610,6 +651,7 @@ async function poll(kind){
     if(d.result && kind==="fp_audit") renderFPAudit(d.result);
     if(d.result && kind==="mc_trial") renderMCTrial(d.result);
     if(d.result && kind==="orig_v01") renderOrigV01(d.result);
+    if(d.result && kind==="parity_audit") renderParityAudit(d.result);
     if(d.data_exists) $("dataState").textContent="✅ Data ready";
     if(d.running) setTimeout(()=>poll(kind),800);
   }catch(e){
@@ -677,11 +719,12 @@ $("autopsyBtn").addEventListener("click", async ()=>{
 $("tournamentBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-tournament",{method:"POST"})).json(); setProgress("tournament",d); poll("tournament"); });
 
 $("od_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-audit",{method:"POST"})).json(); setProgress("od_audit",d); poll("od_audit"); });
-$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); poll("orig_v01"); });
+$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); poll("orig_v01"); poll("parity_audit"); });
 $("orb_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-orb-audit",{method:"POST"})).json(); setProgress("orb_audit",d); poll("orb_audit"); });
 $("fp_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-fp-audit",{method:"POST"})).json(); setProgress("fp_audit",d); poll("fp_audit"); });
 $("mc_trialBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-mc-trial",{method:"POST"})).json(); setProgress("mc_trial",d); poll("mc_trial"); });
 $("orig_v01Btn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-orig-v01",{method:"POST"})).json(); setProgress("orig_v01",d); poll("orig_v01"); });
+$("parity_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-parity-audit",{method:"POST"})).json(); setProgress("parity_audit",d); poll("parity_audit"); });
 
 $("rescanBtn").addEventListener("click", async ()=>{
   try{
@@ -1546,6 +1589,54 @@ def start_orig_v01():
     time.sleep(.05)
     with LOCK:
         return jsonify(JOBS["orig_v01"])
+
+
+
+def parity_audit_worker():
+    if not SIP_DATA.exists() or not OOS_DATA.exists():
+        set_job(
+            "parity_audit", running=False, progress=100,
+            message="❌ 缺少现有 Discovery / True OOS Persistent Replay。不要重新下载；先 Run Preflight。",
+            ok=False
+        )
+        return
+    try:
+        def cb(pct, msg):
+            set_job("parity_audit", running=True, progress=int(pct), message=msg, ok=None)
+
+        set_job(
+            "parity_audit", running=True, progress=2,
+            message="检查 timestamp / timezone / session parity…",
+            ok=None, result=None
+        )
+
+        result = run_original_parity_audit(
+            str(SIP_DATA), str(OOS_DATA),
+            str(OUT / "original_engine_parity_audit_v1"),
+            progress_cb=cb
+        )
+
+        set_job(
+            "parity_audit", running=False, progress=100,
+            message="✅ Original Engine Parity Audit 完成",
+            ok=True, result=result
+        )
+
+    except Exception as e:
+        set_job(
+            "parity_audit", running=False, progress=100,
+            message=f"❌ {type(e).__name__}: {e}", ok=False
+        )
+
+@app.post("/start-parity-audit")
+def start_parity_audit():
+    with LOCK:
+        if JOBS["parity_audit"]["running"]:
+            return jsonify(JOBS["parity_audit"])
+    threading.Thread(target=parity_audit_worker, daemon=True).start()
+    time.sleep(.05)
+    with LOCK:
+        return jsonify(JOBS["parity_audit"])
 
 
 @app.post("/start-download")
