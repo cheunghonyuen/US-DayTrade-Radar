@@ -21,6 +21,7 @@ from exact_original_v01_replay import run_exact_original_v01
 from original_engine_parity_audit_v1 import run_original_parity_audit
 from original_v01_tzfixed_replay import run_original_tz_fixed_replay
 from qc_stocks_in_play_benchmark_v1 import run_qc_stocks_in_play_benchmark
+from qc_1min_oos_resolver_v1 import run_qc_1min_oos_resolver
 
 app = Flask(__name__)
 
@@ -72,6 +73,7 @@ JOBS = {
     "parity_audit": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "orig_tz": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "qc_bench": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
+    "qc_1m": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
 }
 
 HTML = """
@@ -334,6 +336,18 @@ th:first-child,td:first-child{text-align:left}
 <div class="track"><div id="qc_benchBar" class="bar"></div></div>
 <div id="qc_benchMsg" class="msg">尚未开始</div>
 <div id="qc_benchResults" class="scroll"></div>
+</div>
+
+<div class="card">
+<h2>21. QuantConnect ORB · True OOS 1-Minute Resolver v1</h2>
+<p><b>只解决真正会改变结论的问题：</b>20 的 OOS PF 从 0.6845 到 1.5743，差异来自同一根 5min bar 内 Entry/Stop 顺序。</p>
+<p class="muted">这版只处理 True OOS，而且只下载“strict 与 delayed-stop 结果不同”的交易日 1-minute bars。已解析/下载的数据写入 /data/daytrade 持久缓存；Railway 中断后可继续，不从头下载。</p>
+<p class="muted">1-minute 仍可能出现同一分钟同时触发 Entry+Stop，所以结果输出 Lower/Upper 两个边界。两边都盈利才晋级 Backtrader/LEAN；两边都亏就 DROP；仍跨过 PF=1 才需要 tick/event-order 数据。</p>
+<button id="qc_1mBtn" type="button">Run True OOS 1-Minute Resolver</button>
+<div class="row"><b>Resolver 进度</b><span id="qc_1mPct">0%</span></div>
+<div class="track"><div id="qc_1mBar" class="bar"></div></div>
+<div id="qc_1mMsg" class="msg">尚未开始</div>
+<div id="qc_1mResults" class="scroll"></div>
 </div>
 
 <div class="card">
@@ -697,6 +711,22 @@ function renderQCBench(r){
  $("qc_benchResults").innerHTML=h;
 }
 
+
+function renderQC1m(r){
+ if(!r)return;
+ const lo=r.lower_bound||{},hi=r.upper_bound||{};
+ let h=`<p><b>${r.study}</b></p>`;
+ h+=`<p>OOS trades ${r.oos_trades} · 5min ambiguous ${r.five_min_ambiguous_trades} · stable ${r.five_min_stable_trades}</p>`;
+ h+=`<p><b>Resolution:</b> ${JSON.stringify(r.resolution_status||{})}</p>`;
+ h+='<table><thead><tr><th>1min bound</th><th>Trades</th><th>Win%</th><th>PF</th><th>AvgR</th><th>MedianR</th></tr></thead><tbody>';
+ const row=(n,x)=>`<tr><td>${n}</td><td>${x.trades??0}</td><td>${(Number(x.win_rate||0)*100).toFixed(1)}</td><td>${x.profit_factor??0}</td><td>${x.avg_r??0}</td><td>${x.median_r??0}</td></tr>`;
+ h+=row("Lower (conservative)",lo)+row("Upper",hi);
+ h+='</tbody></table>';
+ h+=`<p><b>Remaining same-1min ambiguity:</b> ${r.remaining_1min_ambiguity} · <b>Download errors:</b> ${r.download_errors}</p>`;
+ h+=`<p><b>Decision:</b> ${r.decision_rule}</p>`;
+ $("qc_1mResults").innerHTML=h;
+}
+
 async function poll(kind){
   try{
     const r=await fetch("/job/"+kind,{cache:"no-store"});
@@ -719,6 +749,7 @@ async function poll(kind){
     if(d.result && kind==="parity_audit") renderParityAudit(d.result);
     if(d.result && kind==="orig_tz") renderOrigTZ(d.result);
     if(d.result && kind==="qc_bench") renderQCBench(d.result);
+    if(d.result && kind==="qc_1m") renderQC1m(d.result);
     if(d.data_exists) $("dataState").textContent="✅ Data ready";
     if(d.running) setTimeout(()=>poll(kind),800);
   }catch(e){
@@ -786,7 +817,7 @@ $("autopsyBtn").addEventListener("click", async ()=>{
 $("tournamentBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-tournament",{method:"POST"})).json(); setProgress("tournament",d); poll("tournament"); });
 
 $("od_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-audit",{method:"POST"})).json(); setProgress("od_audit",d); poll("od_audit"); });
-$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); poll("orig_v01"); poll("parity_audit"); poll("orig_tz"); poll("qc_bench"); });
+$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); poll("orig_v01"); poll("parity_audit"); poll("orig_tz"); poll("qc_bench"); poll("qc_1m"); });
 $("orb_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-orb-audit",{method:"POST"})).json(); setProgress("orb_audit",d); poll("orb_audit"); });
 $("fp_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-fp-audit",{method:"POST"})).json(); setProgress("fp_audit",d); poll("fp_audit"); });
 $("mc_trialBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-mc-trial",{method:"POST"})).json(); setProgress("mc_trial",d); poll("mc_trial"); });
@@ -794,6 +825,7 @@ $("orig_v01Btn").addEventListener("click", async ()=>{ const d=await (await fetc
 $("parity_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-parity-audit",{method:"POST"})).json(); setProgress("parity_audit",d); poll("parity_audit"); });
 $("orig_tzBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-orig-tz",{method:"POST"})).json(); setProgress("orig_tz",d); poll("orig_tz"); });
 $("qc_benchBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-qc-bench",{method:"POST"})).json(); setProgress("qc_bench",d); poll("qc_bench"); });
+$("qc_1mBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-qc-1m",{method:"POST"})).json(); setProgress("qc_1m",d); poll("qc_1m"); });
 
 $("rescanBtn").addEventListener("click", async ()=>{
   try{
@@ -1779,6 +1811,31 @@ def start_qc_bench():
     time.sleep(.05)
     with LOCK:
         return jsonify(JOBS["qc_bench"])
+
+
+
+def qc_1m_worker():
+    qdir=OUT/"qc_stocks_in_play_benchmark_v1"
+    if not (qdir/"qc_oos_strict.csv").exists():
+        set_job("qc_1m",running=False,progress=100,message="❌ 先跑 20 QuantConnect External Benchmark；不需要重新下载125股票数据。",ok=False)
+        return
+    try:
+        def cb(pct,msg): set_job("qc_1m",running=True,progress=int(pct),message=msg,ok=None)
+        set_job("qc_1m",running=True,progress=1,message="读取20的OOS ambiguity；只下载必要的1min交易日…",ok=None,result=None)
+        result=run_qc_1min_oos_resolver(str(qdir),progress_cb=cb)
+        set_job("qc_1m",running=False,progress=100,message=f"✅ 1min Resolver 完成 · PF lower {result['lower_bound']['profit_factor']} / upper {result['upper_bound']['profit_factor']}",ok=True,result=result)
+    except Exception as e:
+        set_job("qc_1m",running=False,progress=100,message=f"❌ {type(e).__name__}: {e}",ok=False)
+
+@app.post("/start-qc-1m")
+def start_qc_1m():
+    with LOCK:
+        if JOBS["qc_1m"]["running"]:
+            return jsonify(JOBS["qc_1m"])
+    threading.Thread(target=qc_1m_worker,daemon=True).start()
+    time.sleep(.05)
+    with LOCK:
+        return jsonify(JOBS["qc_1m"])
 
 
 @app.post("/start-download")
