@@ -25,6 +25,7 @@ from qc_1min_oos_resolver_v1 import run_qc_1min_oos_resolver
 from backtrader_execution_parity_v1 import run_backtrader_execution_parity
 from backtrader_execution_parity_v2 import run_backtrader_parity_v2
 from trade_level_parity_audit_v1 import run_trade_level_parity_audit
+from entry_fill_truth_audit_v1 import run_entry_fill_truth_audit
 
 app = Flask(__name__)
 
@@ -80,6 +81,7 @@ JOBS = {
     "bt_parity": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "bt_parity_v2": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "trade_parity": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
+    "entry_truth": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
 }
 
 HTML = """
@@ -390,6 +392,18 @@ th:first-child,td:first-child{text-align:left}
 <div class="track"><div id="trade_parityBar" class="bar"></div></div>
 <div id="trade_parityMsg" class="msg">尚未开始</div>
 <div id="trade_parityResults" class="scroll"></div>
+</div>
+
+<div class="card">
+<h2>25. Entry Fill Truth Audit v1</h2>
+<p><b>只审24归因出的31笔 Entry Price Difference。</b> 不重跑1813笔，不改策略。</p>
+<p class="muted">逐笔读取现有1-minute cache：Signal time → 第一根合法触发 Entry 的1min bar → intended stop-entry → Backtrader actual fill。Buy-stop 若开盘已越过 entry，则合法成交价应为 bar open；否则应为 stop price。Sell-stop 反向。</p>
+<p class="muted">PASS标准：≥95% 的31笔 Backtrader fill 符合第一根合法1min stop-order成交语义，且无 runtime/schema error。PASS 后正式接受 Backtrader 23 作为主 execution benchmark；否则只修 execution，不碰策略。</p>
+<button id="entry_truthBtn" type="button">Run Entry Fill Truth Audit</button>
+<div class="row"><b>Truth Audit 进度</b><span id="entry_truthPct">0%</span></div>
+<div class="track"><div id="entry_truthBar" class="bar"></div></div>
+<div id="entry_truthMsg" class="msg">尚未开始</div>
+<div id="entry_truthResults" class="scroll"></div>
 </div>
 
 <div class="card">
@@ -827,6 +841,23 @@ function renderTradeParity(r){
  $("trade_parityResults").innerHTML=h;
 }
 
+
+function renderEntryTruth(r){
+ if(!r)return;
+ let h=`<p><b>${r.study}</b> · <b>${r.verdict}</b></p>`;
+ h+=`<p><b>Entry-diff trades:</b> ${r.entry_diff_trades} · PASS ${r.pass_count??0} · FAIL ${r.fail_count??0} · Errors ${r.error_count??0} · Pass share ${(Number(r.pass_share||0)*100).toFixed(1)}%</p>`;
+ if(r.preflight){
+   h+='<h3>Preflight</h3><table><thead><tr><th>Sample</th><th>Exists</th><th>Rows</th><th>Time range</th><th>Error</th></tr></thead><tbody>';
+   (r.preflight||[]).forEach(x=>h+=`<tr><td>${x.symbol} ${x.date}</td><td>${x.exists?"✅":"❌"}</td><td>${x.rows??0}</td><td>${x.time_min??""} → ${x.time_max??""}</td><td>${x.error??""}</td></tr>`);
+   h+='</tbody></table>';
+ }
+ h+='<h3>Largest fill mismatches</h3><table><thead><tr><th>#</th><th>Symbol</th><th>Date</th><th>Side</th><th>Signal</th><th>First legal touch</th><th>Intended</th><th>Touch Open</th><th>Expected Fill</th><th>BT Fill</th><th>Δ</th></tr></thead><tbody>';
+ (r.largest_fill_mismatches||[]).forEach(x=>h+=`<tr><td>${x.row_pos}</td><td>${x.symbol}</td><td>${x.date}</td><td>${x.side}</td><td>${x.signal_time}</td><td>${x.first_legal_touch_time}</td><td>${x.intended_entry}</td><td>${x.first_legal_touch_open}</td><td>${x.expected_stop_fill}</td><td>${x.bt_entry_fill}</td><td>${x.fill_diff}</td></tr>`);
+ h+='</tbody></table>';
+ h+=`<p><b>Interpretation:</b> ${r.interpretation||""}</p><p><b>Next:</b> ${r.next_step||r.decision||""}</p>`;
+ $("entry_truthResults").innerHTML=h;
+}
+
 async function poll(kind){
   try{
     const r=await fetch("/job/"+kind,{cache:"no-store"});
@@ -853,6 +884,7 @@ async function poll(kind){
     if(d.result && kind==="bt_parity") renderBTParity(d.result);
     if(d.result && kind==="bt_parity_v2") renderBTParityV2(d.result);
     if(d.result && kind==="trade_parity") renderTradeParity(d.result);
+    if(d.result && kind==="entry_truth") renderEntryTruth(d.result);
     if(d.data_exists) $("dataState").textContent="✅ Data ready";
     if(d.running) setTimeout(()=>poll(kind),800);
   }catch(e){
@@ -920,7 +952,7 @@ $("autopsyBtn").addEventListener("click", async ()=>{
 $("tournamentBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-tournament",{method:"POST"})).json(); setProgress("tournament",d); poll("tournament"); });
 
 $("od_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-audit",{method:"POST"})).json(); setProgress("od_audit",d); poll("od_audit"); });
-$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); poll("orig_v01"); poll("parity_audit"); poll("orig_tz"); poll("qc_bench"); poll("qc_1m"); poll("bt_parity"); poll("bt_parity_v2"); poll("trade_parity"); });
+$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); poll("orig_v01"); poll("parity_audit"); poll("orig_tz"); poll("qc_bench"); poll("qc_1m"); poll("bt_parity"); poll("bt_parity_v2"); poll("trade_parity"); poll("entry_truth"); });
 $("orb_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-orb-audit",{method:"POST"})).json(); setProgress("orb_audit",d); poll("orb_audit"); });
 $("fp_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-fp-audit",{method:"POST"})).json(); setProgress("fp_audit",d); poll("fp_audit"); });
 $("mc_trialBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-mc-trial",{method:"POST"})).json(); setProgress("mc_trial",d); poll("mc_trial"); });
@@ -932,6 +964,7 @@ $("qc_1mBtn").addEventListener("click", async ()=>{ const d=await (await fetch("
 $("bt_parityBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-bt-parity",{method:"POST"})).json(); setProgress("bt_parity",d); poll("bt_parity"); });
 $("bt_parity_v2Btn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-bt-parity-v2",{method:"POST"})).json(); setProgress("bt_parity_v2",d); poll("bt_parity_v2"); });
 $("trade_parityBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-trade-parity",{method:"POST"})).json(); setProgress("trade_parity",d); poll("trade_parity"); });
+$("entry_truthBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-entry-truth",{method:"POST"})).json(); setProgress("entry_truth",d); poll("entry_truth"); });
 
 $("rescanBtn").addEventListener("click", async ()=>{
   try{
@@ -2011,6 +2044,29 @@ def start_trade_parity():
     time.sleep(.05)
     with LOCK:
         return jsonify(JOBS["trade_parity"])
+
+
+
+def entry_truth_worker():
+    try:
+        def cb(pct,msg): set_job("entry_truth",running=True,progress=int(pct),message=msg,ok=None)
+        set_job("entry_truth",running=True,progress=1,message="读取24的31笔 Entry Price Difference；不重跑策略…",ok=None,result=None)
+        result=run_entry_fill_truth_audit(progress_cb=cb)
+        set_job("entry_truth",running=False,progress=100,
+                message=f"✅ Entry Fill Truth：{result['verdict']} · PASS {result.get('pass_count',0)}/{result.get('entry_diff_trades',0)}",
+                ok=(result["verdict"]=="PASS"),result=result)
+    except Exception as e:
+        set_job("entry_truth",running=False,progress=100,message=f"❌ {type(e).__name__}: {e}",ok=False)
+
+@app.post("/start-entry-truth")
+def start_entry_truth():
+    with LOCK:
+        if JOBS["entry_truth"]["running"]:
+            return jsonify(JOBS["entry_truth"])
+    threading.Thread(target=entry_truth_worker,daemon=True).start()
+    time.sleep(.05)
+    with LOCK:
+        return jsonify(JOBS["entry_truth"])
 
 
 @app.post("/start-download")
