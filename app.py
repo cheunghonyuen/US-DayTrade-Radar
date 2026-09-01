@@ -36,6 +36,7 @@ from alpaca_momentum_source_locked_v2 import run_alpaca_momentum_source_locked_v
 from external_challenger3_vwap_mean_reversion_v1 import run_external_challenger3
 from historical_depth_preflight_v1 import run_historical_depth_preflight, run_historical_depth_build
 from champion_benchmark_summary_v1 import run_champion_benchmark_summary
+from forward_daily_ops_v1 import run_forward_daily_ops
 try:
     from pairs_walkforward_v1 import run_pairs_walkforward
     PAIRS_V1_IMPORT_ERROR = None
@@ -118,6 +119,7 @@ JOBS = {
     "hist_pre": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "hist_build": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "bench_summary": {"running": False, "progress": 0, "message": "尚未刷新", "ok": None, "result": None},
+    "daily_ops": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "pairs_wf": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "pairs_pre_v2": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
     "pairs_v2": {"running": False, "progress": 0, "message": "尚未开始", "ok": None, "result": None},
@@ -159,6 +161,17 @@ th:first-child,td:first-child{text-align:left}
 <div class="wrap">
 <h1>🇺🇸 US DayTrade Radar <small>Original Engine Parity Audit v1</small></h1>
 
+<div class="card">
+<h2>38. Forward Daily Ops & Gate Monitor v1</h2>
+<p><b>以后每天只用这个入口。</b> 不改26、不重跑旧交易、不重新跑外部#1–#4。</p>
+<p class="muted">一次完成：①检查Frozen manifest；②只追加尚未处理的已完成美股交易日；③检查当日5min/1min缓存与错误；④刷新27/37所需只读指标；⑤显示距离20交易日 + 100 trades正式Gate还差多少。</p>
+<p class="muted"><b>Gate：</b>没同时达到20个completed forward trading days和100 trades，禁止判断实盘就绪。达到后状态自动变成 FINAL_AUDIT_READY。</p>
+<button id="daily_opsBtn">Run Daily Forward Ops</button>
+<div class="row"><b>Daily Ops</b><span id="daily_opsPct">0%</span></div>
+<div class="track"><div id="daily_opsBar" class="bar"></div></div>
+<div id="daily_opsMsg" class="msg">尚未开始</div>
+<div id="daily_opsResults" class="scroll"></div>
+</div>
 <div class="card">
 <h2>37. Champion vs External Benchmarks Summary v1</h2>
 <p><b>把26与外部#1–#4放在同一页，先看证据，不再凭单次漂亮PF判断。</b></p>
@@ -1241,6 +1254,28 @@ function renderBenchSummary(r){
  $("bench_summaryResults").innerHTML=h;
 }
 
+
+function renderDailyOps(r){
+ if(!r)return;
+ const o=r.overall||{}, g=r.gate||{}, l=r.latest_day||{};
+ const pct=x=>(Number(x||0)*100).toFixed(1);
+ let h=`<p><b>${r.study}</b> · <b>${g.status||""}</b></p>`;
+ h+=`<p><b>Update:</b> ${r.update_verdict||""} · new dates ${(r.new_dates_processed||[]).join(", ")||"none"} · new trades ${r.new_trades??0}</p>`;
+ h+='<table><thead><tr><th>Days</th><th>Trades</th><th>Win%</th><th>PF</th><th>AvgR</th><th>NetR</th><th>MaxDD(R)</th></tr></thead><tbody>';
+ h+=`<tr><td>${g.days??0}/${g.days_target??20}</td><td>${g.trades??0}/${g.trades_target??100}</td><td>${pct(o.win_rate)}</td><td>${o.profit_factor??0}</td><td>${o.avg_r??0}</td><td>${o.net_r??0}</td><td>${o.max_dd_r??0}</td></tr></tbody></table>`;
+ h+=`<p><b>Remaining:</b> ${g.days_remaining??0} trading days · ${g.trades_remaining??0} trades</p>`;
+ if(l.date){ h+=`<p><b>Latest day ${l.date}:</b> ${l.trades} trades · Win ${pct(l.win_rate)}% · PF ${l.pf} · Net ${l.net_r}R</p>`; }
+ h+='<h3>Data Integrity</h3>';
+ if((r.data_completeness||[]).length){
+   h+='<table><thead><tr><th>Date</th><th>5m symbols</th><th>1m symbols</th><th>Errors</th><th>Status</th></tr></thead><tbody>';
+   (r.data_completeness||[]).forEach(x=>h+=`<tr><td>${x.date}</td><td>${x.cache_5m_symbols}</td><td>${x.cache_1m_symbols}</td><td>${x.logged_errors}</td><td>${x.complete_enough?"PASS":"REVIEW"}</td></tr>`);
+   h+='</tbody></table>';
+ } else { h+='<p>No new date today; existing ledger only.</p>'; }
+ h+=`<p><b>External benchmarks:</b> tested ${r.benchmark_summary?.external_tested??0} · promoted ${r.benchmark_summary?.external_promoted??0} · dropped ${r.benchmark_summary?.external_dropped??0} · research-only ${r.benchmark_summary?.external_research_only??0}</p>`;
+ h+=`<p><b>Next:</b> ${r.next_action||""}</p>`;
+ $("daily_opsResults").innerHTML=h;
+}
+
 async function poll(kind){
   try{
     const r=await fetch("/job/"+kind,{cache:"no-store"});
@@ -1279,6 +1314,7 @@ async function poll(kind){
     if(d.result && kind==="hist_pre") renderHistPre(d.result);
     if(d.result && kind==="hist_build") renderHistBuild(d.result);
     if(d.result && kind==="bench_summary") renderBenchSummary(d.result);
+    if(d.result && kind==="daily_ops") renderDailyOps(d.result);
     if(d.result && kind==="pairs_wf") renderPairsWF(d.result);
     if(d.result && kind==="pairs_pre_v2") renderPairsPreV2(d.result);
     if(d.result && kind==="pairs_v2") renderPairsV2(d.result);
@@ -1349,7 +1385,7 @@ $("autopsyBtn").addEventListener("click", async ()=>{
 $("tournamentBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-tournament",{method:"POST"})).json(); setProgress("tournament",d); poll("tournament"); });
 
 $("od_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-audit",{method:"POST"})).json(); setProgress("od_audit",d); poll("od_audit"); });
-$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); poll("orig_v01"); poll("parity_audit"); poll("orig_tz"); poll("qc_bench"); poll("qc_1m"); poll("bt_parity"); poll("bt_parity_v2"); poll("trade_parity"); poll("entry_truth"); poll("paper_fwd"); poll("command_center"); poll("ext_challenger"); poll("alpaca_mom"); poll("alpaca_funnel"); poll("alpaca_macd_parity"); poll("alpaca_v2"); poll("challenger3"); poll("hist_pre"); poll("hist_build"); poll("bench_summary"); poll("pairs_wf"); poll("pairs_pre_v2"); poll("pairs_v2"); });
+$("od_decisionBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-od-decision",{method:"POST"})).json(); setProgress("od_decision",d); poll("od_decision"); poll("orb_audit"); poll("fp_audit"); poll("mc_trial"); poll("orig_v01"); poll("parity_audit"); poll("orig_tz"); poll("qc_bench"); poll("qc_1m"); poll("bt_parity"); poll("bt_parity_v2"); poll("trade_parity"); poll("entry_truth"); poll("paper_fwd"); poll("command_center"); poll("ext_challenger"); poll("alpaca_mom"); poll("alpaca_funnel"); poll("alpaca_macd_parity"); poll("alpaca_v2"); poll("challenger3"); poll("hist_pre"); poll("hist_build"); poll("bench_summary"); poll("daily_ops"); poll("pairs_wf"); poll("pairs_pre_v2"); poll("pairs_v2"); });
 $("orb_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-orb-audit",{method:"POST"})).json(); setProgress("orb_audit",d); poll("orb_audit"); });
 $("fp_auditBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-fp-audit",{method:"POST"})).json(); setProgress("fp_audit",d); poll("fp_audit"); });
 $("mc_trialBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-mc-trial",{method:"POST"})).json(); setProgress("mc_trial",d); poll("mc_trial"); });
@@ -1373,6 +1409,7 @@ $("challenger3Btn").addEventListener("click", async ()=>{ const d=await (await f
 $("hist_preBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-hist-pre",{method:"POST"})).json(); setProgress("hist_pre",d); poll("hist_pre"); });
 $("hist_buildBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-hist-build",{method:"POST"})).json(); setProgress("hist_build",d); poll("hist_build"); });
 $("bench_summaryBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-bench-summary",{method:"POST"})).json(); setProgress("bench_summary",d); poll("bench_summary"); });
+$("daily_opsBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-daily-ops",{method:"POST"})).json(); setProgress("daily_ops",d); poll("daily_ops"); });
 $("pairs_wfBtn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-pairs-wf",{method:"POST"})).json(); setProgress("pairs_wf",d); poll("pairs_wf"); });
 $("pairs_pre_v2Btn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-pairs-pre-v2",{method:"POST"})).json(); setProgress("pairs_pre_v2",d); poll("pairs_pre_v2"); });
 $("pairs_v2Btn").addEventListener("click", async ()=>{ const d=await (await fetch("/start-pairs-v2",{method:"POST"})).json(); setProgress("pairs_v2",d); poll("pairs_v2"); });
@@ -2789,6 +2826,27 @@ def start_bench_summary():
         if JOBS["bench_summary"]["running"]: return jsonify(JOBS["bench_summary"])
     threading.Thread(target=bench_summary_worker,daemon=True).start(); time.sleep(.05)
     with LOCK:return jsonify(JOBS["bench_summary"])
+
+
+
+def daily_ops_worker():
+    try:
+        def cb(p,m): set_job("daily_ops",running=True,progress=int(p),message=m,ok=None)
+        set_job("daily_ops",running=True,progress=1,message="Frozen Daily Ops：append-only / no tuning…",ok=None,result=None)
+        r=run_forward_daily_ops(progress_cb=cb)
+        g=r["gate"]; o=r["overall"]
+        set_job("daily_ops",running=False,progress=100,
+                message=f"✅ Daily Ops · {g['days']}/20 days · {g['trades']}/100 trades · PF {o.get('profit_factor',0)} · {g['status']}",
+                ok=True,result=r)
+    except Exception as e:
+        set_job("daily_ops",running=False,progress=100,message=f"❌ {type(e).__name__}: {e}",ok=False)
+
+@app.post("/start-daily-ops")
+def start_daily_ops():
+    with LOCK:
+        if JOBS["daily_ops"]["running"]: return jsonify(JOBS["daily_ops"])
+    threading.Thread(target=daily_ops_worker,daemon=True).start(); time.sleep(.05)
+    with LOCK:return jsonify(JOBS["daily_ops"])
 
 
 @app.post("/start-download")
